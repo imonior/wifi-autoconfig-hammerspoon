@@ -1,4 +1,4 @@
-## hammerspoon-wifi-switcher 第三轮完整审查报告（2026-07-25）
+## Wi-Fi AutoConfig for Hammerspoon 第三轮完整审查报告（2026-07-25）
 
 ### 本轮变更概述
 
@@ -144,7 +144,7 @@ local popupsTemplate = loadTemplate("popups.html")
 
 `init.lua:18`、`config.lua:9`、`utils.lua:3`、`web_view.lua:18` 各自 `debug.getinfo(1).source:match(...)`。
 
-**建议**：`utils.lua` 导出 `M.modulePath`，其他文件 `require("wifi_ip_switcher.utils").modulePath`。
+**建议**：`utils.lua` 导出 `M.modulePath`，其他文件 `require("wifi_autoconfig.utils").modulePath`。
 
 **10. `init.lua` 有 3 个未使用的 require**
 

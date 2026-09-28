@@ -1,10 +1,10 @@
 #!/bin/bash
 #
-# install.sh - One-command installer for hammerspoon-wifi-switcher
+# install.sh - One-command installer for Wi-Fi AutoConfig for Hammerspoon
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/imonior/hammerspoon-wifi-switcher/main/scripts/install.sh | bash
-#   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/hammerspoon-wifi-switcher/main/scripts/install.sh | bash  # China mirror
+#   curl -fsSL https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash
+#   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash  # China mirror
 #   bash install.sh              # Fresh install
 #   bash install.sh --update     # Update code only (preserves config.json)
 #   bash install.sh --proxy URL  # Use GitHub proxy
@@ -16,8 +16,9 @@ set -e
 # Configuration
 # ============================================================================
 GITHUB_USER="imonior"
-GITHUB_REPO="hammerspoon-wifi-switcher"
+GITHUB_REPO="wifi-autoconfig-hammerspoon"
 GITHUB_BRANCH="main"
+MODULE_VERSION="3.0.0"
 
 # GitHub proxy support (for users in China)
 # Usage: GITHUB_PROXY=https://ghfast.top/ bash install.sh
@@ -27,8 +28,13 @@ GITHUB_PROXY="${GITHUB_PROXY:-}"
 HAMMERSPOON_APP="/Applications/Hammerspoon.app"
 HAMMERSPOON_DIR="$HOME/.hammerspoon"
 HAMMERSPOON_INIT="$HAMMERSPOON_DIR/init.lua"
-INSTALL_DIR="$HAMMERSPOON_DIR/wifi_ip_switcher"
-REQUIRE_LINE='require("wifi_ip_switcher.init")'
+INSTALL_DIR="$HAMMERSPOON_DIR/wifi_autoconfig"
+REQUIRE_LINE='require("wifi_autoconfig.init")'
+REQUIRE_COMMENT='-- Wi-Fi AutoConfig for Hammerspoon'
+
+# Matches both the module name and the human-readable comment line we inject,
+# so no dangling comment is left behind after an upgrade or an uninstall.
+INIT_LINE_PATTERN='wifi_autoconfig|Wi-Fi AutoConfig'
 
 HAMMERSPOON_DMG_URL="https://github.com/Hammerspoon/hammerspoon/releases/download/1.1.1/Hammerspoon-1.1.1.zip"
 
@@ -65,7 +71,7 @@ trap cleanup EXIT
 
 show_help() {
     cat <<'EOF'
-hammerspoon-wifi-switcher installer
+Wi-Fi AutoConfig for Hammerspoon installer
 
 Usage:
   bash install.sh              Fresh install (installs Hammerspoon if missing)
@@ -75,16 +81,16 @@ Usage:
   bash install.sh --help       Show this help message
 
 One-liner (curl | bash):
-  curl -fsSL https://raw.githubusercontent.com/imonior/hammerspoon-wifi-switcher/main/scripts/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash
 
   With proxy (for China):
-  curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/hammerspoon-wifi-switcher/main/scripts/install.sh | bash
+  curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash
 
   With update:
-  curl -fsSL https://raw.githubusercontent.com/imonior/hammerspoon-wifi-switcher/main/scripts/install.sh | bash -s -- --update
+  curl -fsSL https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash -s -- --update
 
   With proxy + update:
-  curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/hammerspoon-wifi-switcher/main/scripts/install.sh | bash -s -- --update
+  curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash -s -- --update
 
 Environment variable:
   GITHUB_PROXY=https://ghfast.top/ bash install.sh
@@ -186,6 +192,27 @@ ensure_hammerspoon_dir() {
 }
 
 # ============================================================================
+# Detect offline / local package install
+#   When this script is run from inside an extracted release archive (src/ sits
+#   next to scripts/), install directly from the bundled files WITHOUT touching
+#   the network. Otherwise (curl | bash) fall back to download_project().
+# ============================================================================
+detect_local_package() {
+    local script_path="${BASH_SOURCE[0]:-$0}"
+    local script_dir
+    script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd)"
+    local pkg_root="$script_dir/.."
+    if [ -d "$pkg_root/src" ] && [ -f "$pkg_root/src/init.lua" ]; then
+        SRC_DIR="$pkg_root"
+        TMP_DIR="$(mktemp -d)"
+        LOCAL_PACKAGE=true
+        return 0
+    fi
+    LOCAL_PACKAGE=false
+    return 1
+}
+
+# ============================================================================
 # Step 4: Download project files
 # ============================================================================
 download_project() {
@@ -221,14 +248,17 @@ install_files() {
     local is_update="$1"
     step "Installing files to $INSTALL_DIR..."
 
-    # Backup config.json if updating
-    if [ "$is_update" = "true" ] && [ -f "$INSTALL_DIR/config.json" ]; then
-        cp "$INSTALL_DIR/config.json" "$INSTALL_DIR/config.json.backup"
-        info "Backed up config.json to config.json.backup"
-    fi
-
-    # Create directories
     mkdir -p "$INSTALL_DIR/ui/templates" "$INSTALL_DIR/ui/icons"
+
+    # Always preserve the user's config.json - fresh install, update and
+    # reinstall all go through the same path.
+    local preserved_config="$TMP_DIR/config.json.preserved"
+    local had_config=false
+    if [ -f "$INSTALL_DIR/config.json" ]; then
+        cp "$INSTALL_DIR/config.json" "$preserved_config"
+        had_config=true
+        info "Existing config.json found - it will be preserved."
+    fi
 
     # Copy code files (lua + ui)
     cp "$SRC_DIR/src/"*.lua "$INSTALL_DIR/"
@@ -236,23 +266,13 @@ install_files() {
     cp "$SRC_DIR/src/ui/templates/"* "$INSTALL_DIR/ui/templates/"
     cp "$SRC_DIR/src/ui/icons/"* "$INSTALL_DIR/ui/icons/"
 
-    # Handle config.json
-    if [ "$is_update" = "true" ]; then
-        # Update: restore backup, don't touch config.json
-        if [ -f "$INSTALL_DIR/config.json.backup" ]; then
-            cp "$INSTALL_DIR/config.json.backup" "$INSTALL_DIR/config.json"
-        fi
-        info "Update complete. Your config.json was preserved."
-    else
-        # Fresh install: copy example config if no config exists
-        if [ ! -f "$INSTALL_DIR/config.json" ]; then
-            if [ -f "$SRC_DIR/config.example.json" ]; then
-                cp "$SRC_DIR/config.example.json" "$INSTALL_DIR/config.json"
-                info "Created config.json from example template."
-            fi
-        else
-            info "Existing config.json found, keeping it."
-        fi
+    if [ "$had_config" = true ]; then
+        cp "$preserved_config" "$INSTALL_DIR/config.json"
+        cp "$preserved_config" "$INSTALL_DIR/config.json.backup"
+        info "config.json preserved (a copy is kept as config.json.backup)."
+    elif [ -f "$SRC_DIR/config.example.json" ]; then
+        cp "$SRC_DIR/config.example.json" "$INSTALL_DIR/config.json"
+        info "Created config.json from example template."
     fi
 }
 
@@ -265,25 +285,25 @@ inject_require() {
     mkdir -p "$HAMMERSPOON_DIR"
 
     if [ ! -f "$HAMMERSPOON_INIT" ]; then
-        cat > "$HAMMERSPOON_INIT" << 'EOF'
+        cat > "$HAMMERSPOON_INIT" << EOF
 -- ~/.hammerspoon/init.lua
 
--- Wi-Fi IP Switcher module
-require("wifi_ip_switcher.init")
+$REQUIRE_COMMENT
+$REQUIRE_LINE
 EOF
-        info "Created ~/.hammerspoon/init.lua with wifi_ip_switcher module."
+        info "Created ~/.hammerspoon/init.lua with wifi_autoconfig module."
         return 0
     fi
 
-    if grep -qF 'wifi_ip_switcher' "$HAMMERSPOON_INIT" 2>/dev/null; then
+    if grep -qF 'wifi_autoconfig' "$HAMMERSPOON_INIT" 2>/dev/null; then
         info "Module already referenced in init.lua. Skipping."
     else
-        cat >> "$HAMMERSPOON_INIT" << 'EOF'
+        cat >> "$HAMMERSPOON_INIT" << EOF
 
--- Wi-Fi IP Switcher module
-require("wifi_ip_switcher.init")
+$REQUIRE_COMMENT
+$REQUIRE_LINE
 EOF
-        info "Added wifi_ip_switcher module to init.lua."
+        info "Added wifi_autoconfig module to init.lua."
     fi
 }
 
@@ -311,15 +331,15 @@ print_success() {
     echo ""
     echo -e "${GREEN}========================================${NC}"
     if [ "$is_update" = "true" ]; then
-        echo -e "${GREEN}  hammerspoon-wifi-switcher UPDATED!${NC}"
+        echo -e "${GREEN}  Wi-Fi AutoConfig for Hammerspoon UPDATED!${NC}"
     else
-        echo -e "${GREEN}  hammerspoon-wifi-switcher INSTALLED!${NC}"
+        echo -e "${GREEN}  Wi-Fi AutoConfig for Hammerspoon INSTALLED!${NC}"
     fi
     echo -e "${GREEN}========================================${NC}"
     echo ""
     echo "  Install location: $INSTALL_DIR"
     echo "  Config file:      $INSTALL_DIR/config.json"
-    echo "  Log file:         $INSTALL_DIR/switcher.log"
+    echo "  Log file:         $INSTALL_DIR/wifi_autoconfig.log"
     echo ""
     echo "  Next steps:"
     echo "    1. Click the 🌐 icon in your menu bar"
@@ -371,14 +391,19 @@ main() {
     done
 
     echo ""
-    echo -e "${BLUE}  hammerspoon-wifi-switcher${NC}"
+    echo -e "${BLUE}  Wi-Fi AutoConfig for Hammerspoon v${MODULE_VERSION}${NC}"
     echo -e "${BLUE}  ========================${NC}"
     echo ""
 
     check_os
     ensure_hammerspoon
     ensure_hammerspoon_dir
-    download_project
+
+    if detect_local_package; then
+        info "Local package detected - installing from bundled files (offline)."
+    else
+        download_project
+    fi
 
     if [ "$mode" = "update" ]; then
         install_files "true"
@@ -389,7 +414,7 @@ main() {
             warn "Use --update to update code without losing config."
             echo ""
             if [ -t 0 ]; then
-                read -p "Overwrite existing installation? (y/N) " -r
+                read -p "Overwrite existing installation? (y/N) " -r || true
                 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                     info "Aborted. Use --update to safely update."
                     exit 0

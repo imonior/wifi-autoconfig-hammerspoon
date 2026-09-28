@@ -1,7 +1,7 @@
 # User data - never commit
 config.json
 config.json.backup
-switcher.log
+wifi_autoconfig.log
 *.log
 
 # macOS
@@ -13,3 +13,14 @@ switcher.log
 
 # Plan docs (internal)
 .trae/
+
+# Editor / tooling leftovers
+*.bak.*
+.codeartsdoer/
+.codearts_io_test.tmp
+
+# Local machine-only data (never pushed to GitHub)
+.workbuddy/
+
+# Release build output
+dist/

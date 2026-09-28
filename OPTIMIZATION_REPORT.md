@@ -1,4 +1,4 @@
-## hammerspoon-wifi-switcher v2 优化分析报告（2026-07-24 更新）
+## Wi-Fi AutoConfig for Hammerspoon v2 优化分析报告（2026-07-24 更新）
 
 基于项目重构后的最新版本（`src/` + `scripts/` 目录结构、菜单栏 VPN 状态显示、SVG 图标、编辑器 i18n 等新增功能）。以下分析覆盖全部 18 个源文件，聚焦新版引入的新问题以及仍存在的旧问题。
 

@@ -1,14 +1,14 @@
--- ~/.hammerspoon/wifi_ip_switcher/ui/web_view.lua
+-- ~/.hammerspoon/wifi_autoconfig/ui/web_view.lua
 local webview = require("hs.webview")
 local screen = require("hs.screen")
 local urlevent = require("hs.urlevent")
 local json = require("hs.json")
 local drawing = require("hs.drawing")
 local timer = require("hs.timer")
-local core = require("wifi_ip_switcher.core")
-local utils = require("wifi_ip_switcher.utils")
-local config = require("wifi_ip_switcher.config")
-local i18n = require("wifi_ip_switcher.i18n")
+local core = require("wifi_autoconfig.core")
+local utils = require("wifi_autoconfig.utils")
+local config = require("wifi_autoconfig.config")
+local i18n = require("wifi_autoconfig.i18n")
 
 local M = {}
 M.editorView = nil
@@ -16,7 +16,6 @@ M.popupView = nil
 M.logPopupView = nil
 
 local modulePath = utils.modulePath .. "ui/"
-local basePath = utils.modulePath
 
 local templateCache = {}
 
@@ -77,7 +76,7 @@ function M.showEditor(configData)
     -- 核心：当用户点击左上角红色叉叉关闭窗口时，必须彻底把变量和内存抹除干净
     M.editorView:windowCallback(function(action)
         if action == "closing" then
-            utils.log("windowCallback - 窗口关闭，editorView 设置为 nil")
+            utils.log(i18n.t("log_window_closed"))
             M.editorView = nil
         end
     end)
@@ -93,7 +92,7 @@ function M.showEditor(configData)
     
     M.editorView:show()
     
-    utils.log("showEditor - 窗口创建成功，editorView: " .. tostring(M.editorView))
+    utils.log(i18n.t("log_window_created", tostring(M.editorView)))
     
     utils.waitForCondition(function()
         local status = core.getCurrentWiFiStatus()
@@ -101,22 +100,22 @@ function M.showEditor(configData)
     end, 10, 0.5, function(ssidReady)
         if M.editorView then
             local status = core.getCurrentWiFiStatus()
-            utils.log("延迟同步网络状态 - SSID: " .. tostring(status.ssid))
+            utils.log(i18n.t("log_delay_sync", tostring(status.ssid)))
             M.syncHardwareStatusToUI()
         end
     end)
 end
 
 function M.refreshEditor()
-    utils.log("refreshEditor - editorView: " .. tostring(M.editorView))
-    utils.log("refreshEditor - editorView type: " .. type(M.editorView))
+    utils.log(i18n.t("log_refresh_editor", tostring(M.editorView)))
+    utils.log(i18n.t("log_refresh_editor_type", type(M.editorView)))
     
     if not M.editorView then 
-        utils.log("refreshEditor - editorView 为 nil，无法刷新")
+        utils.log(i18n.t("log_refresh_nil"))
         return 
     end
     
-    utils.log("refreshEditor - 刷新编辑器内容")
+    utils.log(i18n.t("log_refresh_content"))
     
     config.read()
     
@@ -126,7 +125,7 @@ function M.refreshEditor()
     
     local configCount = 0
     for k,v in pairs(config.current) do configCount = configCount + 1 end
-    utils.log("refreshEditor - 配置数量: " .. configCount)
+    utils.log(i18n.t("log_config_count", configCount))
     
     local jsExpr = string.format("refreshConfig('%s', '%s')", 
         utils.escapeJS(networksJson), utils.escapeJS(configJson))
@@ -136,9 +135,9 @@ function M.refreshEditor()
     end)
     
     if success then
-        utils.log("refreshEditor - JS执行成功")
+        utils.log(i18n.t("log_js_success"))
     else
-        utils.log("refreshEditor - JS执行失败: " .. tostring(result))
+        utils.log(i18n.t("log_js_fail", tostring(result)))
     end
     
     utils.wait(1, function()
@@ -161,7 +160,7 @@ function M.syncHardwareStatusToUI()
     
     syncLogCount = syncLogCount + 1
     if syncLogCount % 5 == 0 then
-        utils.log("syncHardwareStatusToUI - SSID: " .. tostring(status.ssid) .. ", DNS: " .. tostring(dns))
+        utils.log(i18n.t("log_sync_status", tostring(status.ssid), tostring(dns)))
     end
     
     local ssidStr = status.ssid or i18n.t("not_connected")
@@ -173,7 +172,7 @@ function M.syncHardwareStatusToUI()
     end)
     
     if not success then
-        utils.log("syncHardwareStatusToUI - JS执行失败: " .. tostring(result))
+        utils.log(i18n.t("log_sync_js_fail", tostring(result)))
     end
 end
 
@@ -210,22 +209,22 @@ function M.showPopup(mode, title, contentPayload)
         if popup.windowStyle then popup:windowStyle({"titled", "closable", "resizable"}) end
         popup:show()
         
-        utils.log("showPopup - 已显示新弹窗: " .. title)
+        utils.log(i18n.t("log_show_popup", tostring(title)))
     end
 
     if mode == "success" then
         if M.popupView and type(M.popupView) == "userdata" then
-            local ok, err = pcall(function() M.popupView:delete() end)
+            pcall(function() M.popupView:delete() end)
             M.popupView = nil
-            utils.log("showPopup - 已关闭旧的成功弹窗")
+            utils.log(i18n.t("log_close_old_popup"))
             timer.doAfter(0.1, createPopup)
             return
         end
     else
         if M.logPopupView and type(M.logPopupView) == "userdata" then
-            local ok, err = pcall(function() M.logPopupView:delete() end)
+            pcall(function() M.logPopupView:delete() end)
             M.logPopupView = nil
-            utils.log("showPopup - 已关闭旧的日志弹窗")
+            utils.log(i18n.t("log_close_log_popup"))
             timer.doAfter(0.1, createPopup)
             return
         end
@@ -246,7 +245,7 @@ urlevent.bind("close_popup_view", function()
 end)
 
 urlevent.bind("clear_log", function()
-    local f = io.open(basePath .. "switcher.log", "w")
+    local f = io.open(utils.logFilePath, "w")
     if f then
         f:close()
         utils.log(i18n.t("log_cleared"))
@@ -265,7 +264,7 @@ urlevent.bind("clear_log", function()
 end)
 
 urlevent.bind("refresh_log", function()
-    local f = io.open(basePath .. "switcher.log", "r")
+    local f = io.open(utils.logFilePath, "r")
     local content = ""
     if f then
         content = f:read("*a")

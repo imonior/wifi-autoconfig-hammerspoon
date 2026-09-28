@@ -1,7 +1,7 @@
--- ~/.hammerspoon/wifi_ip_switcher/core.lua
+-- ~/.hammerspoon/wifi_autoconfig/core.lua
 local wifi = require("hs.wifi")
-local utils = require("wifi_ip_switcher.utils")
-local i18n = require("wifi_ip_switcher.i18n")
+local utils = require("wifi_autoconfig.utils")
+local i18n = require("wifi_autoconfig.i18n")
 
 local M = {}
 
@@ -16,23 +16,23 @@ M.shellQuote = shellQuote
 
 function M.runWithSudo(cmd)
     local fullCmd = string.format("sudo %s", cmd)
-    utils.log("驱动层执行: " .. fullCmd)
+    utils.log(i18n.t("log_cmd_exec", fullCmd))
     
     local handle = io.popen(fullCmd .. " 2>&1")
     if not handle then
-        utils.log("命令执行失败: 无法打开进程")
-        return false, "无法打开进程"
+        utils.log(i18n.t("log_cmd_open_fail"))
+        return false, i18n.t("log_cmd_open_fail")
     end
     
     local result = handle:read("*a")
     local success, _, exitCode = handle:close()
     
-    utils.log("命令输出: " .. (result or ""))
+    utils.log(i18n.t("log_cmd_output", result or ""))
     
     local ok = (exitCode == 0)
     if not ok then
-        utils.log("命令执行失败: " .. fullCmd)
-        utils.log("错误信息: " .. (result or ""))
+        utils.log(i18n.t("log_cmd_failed", fullCmd))
+        utils.log(i18n.t("log_cmd_error", result or ""))
     end
     return ok, result
 end
@@ -171,16 +171,16 @@ end
 -- 【新增】解析 IPv6 生效状态与实际分配到的全球单播地址
 function M.getCurrentIPv6Info(wifiInterface)
     local handle = io.popen("/usr/sbin/networksetup -getinfo " .. shellQuote(wifiInterface))
-    if not handle then return "Off", i18n.t("unassigned"), "", "" end
+    if not handle then return i18n.t("v6_off"), i18n.t("unassigned"), "", "" end
     local result = handle:read("*a")
     handle:close()
 
-    local v6mode = "Off"
+    local v6mode = i18n.t("v6_off")
     if result:match("IPv6:.*Automatic") then v6mode = i18n.t("v6_automatic")
     elseif result:match("IPv6:.*Manual") then v6mode = i18n.t("v6_manual")
     elseif result:match("IPv6:.*Link") then v6mode = i18n.t("v6_link_local")
     elseif result:match("IPv6:.*Off") then v6mode = i18n.t("v6_off")
-    elseif result:match("IPv6:.*Enabled") then v6mode = "Enabled" end
+    elseif result:match("IPv6:.*Enabled") then v6mode = i18n.t("v6_enabled") end
 
     local v6ip = result:match("IPv6 IP address:%s*([%a%d%:]+)") or i18n.t("unassigned")
     local v6prefix = result:match("IPv6 prefix length:%s*(%d+)") or ""

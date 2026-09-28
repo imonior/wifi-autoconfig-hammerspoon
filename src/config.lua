@@ -1,16 +1,14 @@
--- ~/.hammerspoon/wifi_ip_switcher/config.lua
+-- ~/.hammerspoon/wifi_autoconfig/config.lua
 local json = require("hs.json")
 local alert = require("hs.alert")
 local urlevent = require("hs.urlevent")
-local utils = require("wifi_ip_switcher.utils")
-local i18n = require("wifi_ip_switcher.i18n")
+local utils = require("wifi_autoconfig.utils")
+local i18n = require("wifi_autoconfig.i18n")
 
 local M = {}
 local modulePath = utils.modulePath
 M.path = modulePath .. "config.json"
 M.current = {}
-
-local oldConfigPath = modulePath .. "wifi_ip_config.json"
 
 local function isValidIPv4(str)
     if not str or str == "" then return false end
@@ -41,30 +39,7 @@ local function validateConfig(d)
     return true
 end
 
-function M.migrateConfig()
-    local newFileExists = io.open(M.path, "r")
-    if newFileExists then
-        newFileExists:close()
-        return
-    end
-    
-    local oldFile = io.open(oldConfigPath, "r")
-    if oldFile then
-        local content = oldFile:read("*a")
-        oldFile:close()
-        
-        local newFile = io.open(M.path, "w")
-        if newFile then
-            newFile:write(content)
-            newFile:close()
-            utils.log("Migrated config from " .. oldConfigPath .. " to " .. M.path)
-        end
-    end
-end
-
 function M.read()
-    M.migrateConfig()
-    
     local f = io.open(M.path, "r")
     if f then
         local content = f:read("*a")
@@ -98,7 +73,7 @@ function M.registerURLSchemes(onConfigChangedCallback, onForceApply, onFetchInfo
             local valid, errMsg = validateConfig(d)
             if not valid then
                 alert.show(i18n.t("ui_validation_error") .. ": " .. errMsg)
-                utils.log("Validation failed for SSID " .. d.ssid .. ": " .. errMsg)
+                utils.log(i18n.t("log_validation_failed", tostring(d.ssid), errMsg))
                 return
             end
             M.current[d.ssid] = {
@@ -107,15 +82,12 @@ function M.registerURLSchemes(onConfigChangedCallback, onForceApply, onFetchInfo
             }
             M.write()
             alert.show(i18n.t("ui_save_success") .. ": " .. d.ssid)
-            utils.log("Saved configuration for SSID: " .. d.ssid)
+            utils.log(i18n.t("log_saved_config", tostring(d.ssid)))
             if onConfigChangedCallback then onConfigChangedCallback() end
         end
     end)
 
     urlevent.bind("delete_wifi_scene", function(eventName, params)
-        utils.log("delete_wifi_scene event triggered: " .. tostring(eventName))
-        utils.log("delete_wifi_scene params: " .. json.encode(params))
-        
         local ssid = nil
         if params.data then
             local ok, d = pcall(json.decode, params.data)
@@ -123,20 +95,13 @@ function M.registerURLSchemes(onConfigChangedCallback, onForceApply, onFetchInfo
         else
             ssid = params.ssid
         end
-        
-        utils.log("delete_wifi_scene ssid: " .. tostring(ssid))
-        
+
         if ssid then
             M.current[ssid] = nil
             M.write()
             alert.show(i18n.t("ui_delete_success") .. ": " .. ssid)
-            utils.log("Deleted configuration for SSID: " .. ssid)
-            utils.log("Remaining configurations: " .. json.encode(M.current))
-            utils.log("onConfigChangedCallback: " .. tostring(onConfigChangedCallback))
-            if onConfigChangedCallback then 
-                utils.log("Calling onConfigChangedCallback after delete")
-                onConfigChangedCallback() 
-            end
+            utils.log(i18n.t("log_deleted_config", tostring(ssid)))
+            if onConfigChangedCallback then onConfigChangedCallback() end
         end
     end)
 

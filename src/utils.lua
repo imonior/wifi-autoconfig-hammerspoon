@@ -1,32 +1,11 @@
--- ~/.hammerspoon/wifi_ip_switcher/utils.lua
+-- ~/.hammerspoon/wifi_autoconfig/utils.lua
 local M = {}
-M.modulePath = debug.getinfo(1).source:match("@?(.*/)") or (os.getenv("HOME") .. "/.hammerspoon/wifi_ip_switcher/")
+M.modulePath = debug.getinfo(1).source:match("@?(.*/)") or (os.getenv("HOME") .. "/.hammerspoon/wifi_autoconfig/")
 local modulePath = M.modulePath
-local logFile = modulePath .. "switcher.log"
-local lastCleanupTime = 0
+local logFile = modulePath .. "wifi_autoconfig.log"
+local lastCleanupTime = os.time()
 local timer = require("hs.timer")
-
-local oldLogPath = modulePath .. "wifi_ip_switcher.log"
-
-function M.migrateLog()
-    local newFileExists = io.open(logFile, "r")
-    if newFileExists then
-        newFileExists:close()
-        return
-    end
-    
-    local oldFile = io.open(oldLogPath, "r")
-    if oldFile then
-        local content = oldFile:read("*a")
-        oldFile:close()
-        
-        local newFile = io.open(logFile, "w")
-        if newFile then
-            newFile:write(content)
-            newFile:close()
-        end
-    end
-end
+local i18n = require("wifi_autoconfig.i18n")
 
 function M.escapeHTML(str)
     if not str then return "" end
@@ -42,6 +21,12 @@ function M.escapeJS(str)
     return str
 end
 
+M.logFilePath = logFile
+
+local function cleanupInterval()
+    return 7 * 24 * 3600
+end
+
 function M.cleanOldLogs()
     local f = io.open(logFile, "r")
     if not f then return end
@@ -55,7 +40,7 @@ function M.cleanOldLogs()
             local y, m, d, h, mi, s = tonumber(year), tonumber(month), tonumber(day), tonumber(hour), tonumber(min), tonumber(sec)
             if y and m and d and h and mi and s then
                 local t = os.time{year=y, month=m, day=d, hour=h, min=mi, sec=s}
-                if now - t <= 7*24*3600 then
+                if now - t <= cleanupInterval() then
                     table.insert(lines, line)
                     lastEntryWithinRange = true
                 else
@@ -81,7 +66,7 @@ end
 
 function M.log(message)
     local now = os.time()
-    if now - lastCleanupTime >= 7 * 24 * 3600 then
+    if now - lastCleanupTime >= cleanupInterval() then
         M.cleanOldLogs()
         lastCleanupTime = now
     end
@@ -95,7 +80,7 @@ end
 
 function M.wait(seconds, callback)
     if not callback then
-        M.log("WARNING: wait() called without callback - ignoring")
+        M.log(i18n.t("log_wait_no_callback"))
         return
     end
     timer.doAfter(seconds, callback)
@@ -103,13 +88,13 @@ end
 
 function M.waitForCondition(checkFn, timeout, interval, callback)
     if not checkFn or type(checkFn) ~= "function" then
-        M.log("waitForCondition - checkFn 无效")
+        M.log(i18n.t("log_waitfor_check_invalid"))
         if callback then callback(false) end
         return
     end
 
     if not callback or type(callback) ~= "function" then
-        M.log("waitForCondition - callback 无效")
+        M.log(i18n.t("log_waitfor_cb_invalid"))
         return
     end
 
@@ -125,7 +110,7 @@ function M.waitForCondition(checkFn, timeout, interval, callback)
         if not checkFn or not callback then
             done = true
             if t then t:stop() end
-            M.log("waitForCondition - 回调函数已失效")
+            M.log(i18n.t("log_waitfor_cb_lost"))
             return
         end
 
@@ -140,7 +125,7 @@ function M.waitForCondition(checkFn, timeout, interval, callback)
         if elapsed >= maxTimeout then
             done = true
             if t then t:stop() end
-            M.log("waitForCondition - 超时，已等待 " .. elapsed .. " 秒")
+            M.log(i18n.t("log_waitfor_timeout", tostring(elapsed)))
             callback(false)
             return
         end
@@ -156,13 +141,13 @@ end
 
 function M.executeWithRetry(cmdFn, checkFn, maxRetries, delay, callback)
     if not cmdFn or type(cmdFn) ~= "function" then
-        M.log("executeWithRetry - cmdFn 无效")
+        M.log(i18n.t("log_retry_cmd_invalid"))
         if callback then callback(false) end
         return
     end
 
     if not callback or type(callback) ~= "function" then
-        M.log("executeWithRetry - callback 无效")
+        M.log(i18n.t("log_retry_cb_invalid"))
         return
     end
 
@@ -178,7 +163,7 @@ function M.executeWithRetry(cmdFn, checkFn, maxRetries, delay, callback)
         if not cmdFn or not callback then
             done = true
             if t then t:stop() end
-            M.log("executeWithRetry - 回调函数已失效")
+            M.log(i18n.t("log_retry_cb_lost"))
             return
         end
 
@@ -194,12 +179,12 @@ function M.executeWithRetry(cmdFn, checkFn, maxRetries, delay, callback)
         if retries >= maxAttempts then
             done = true
             if t then t:stop() end
-            M.log("executeWithRetry - 重试次数用尽，失败")
+            M.log(i18n.t("log_retry_exhausted"))
             callback(false, result)
             return
         end
 
-        M.log("executeWithRetry - 第 " .. retries .. " 次重试，等待 " .. waitDelay .. " 秒")
+        M.log(i18n.t("log_retry_attempt", retries, tostring(waitDelay)))
     end
 
     execute()

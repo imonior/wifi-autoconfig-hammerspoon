@@ -1,0 +1,32 @@
+name: Release
+
+# Build the offline install bundle and publish a GitHub Release whenever a
+# semantic version tag (vX.Y.Z) is pushed.
+#
+# Runs on macOS because this project targets Hammerspoon, which is macOS-only —
+# the release pipeline must stay on the real target platform.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build release package
+        run: bash scripts/build-release.sh
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/wifi-autoconfig-hammerspoon-v*.zip
+          body_path: RELEASE.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

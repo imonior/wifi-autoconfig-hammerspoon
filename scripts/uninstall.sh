@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# uninstall.sh - Uninstaller for hammerspoon-wifi-switcher
+# uninstall.sh - Uninstaller for Wi-Fi AutoConfig for Hammerspoon
 #
 # Usage:
 #   bash uninstall.sh              Interactive uninstall (prompts for config backup)
@@ -14,8 +14,10 @@ set -e
 # ============================================================================
 HAMMERSPOON_DIR="$HOME/.hammerspoon"
 HAMMERSPOON_INIT="$HAMMERSPOON_DIR/init.lua"
-INSTALL_DIR="$HAMMERSPOON_DIR/wifi_ip_switcher"
-DESKTOP_BACKUP="$HOME/Desktop/wifi_ip_switcher_config_backup.json"
+INSTALL_DIR="$HAMMERSPOON_DIR/wifi_autoconfig"
+BACKUP_DIR="${BACKUP_DIR:-$HOME/.wifi_autoconfig_backups}"
+DESKTOP_BACKUP="$BACKUP_DIR/wifi_autoconfig_config_backup.json"
+MODULE_VERSION="3.0.0"
 
 # Colors
 RED='\033[0;31m'
@@ -34,20 +36,21 @@ step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 show_help() {
     cat <<'EOF'
-hammerspoon-wifi-switcher uninstaller
+Wi-Fi AutoConfig for Hammerspoon uninstaller
 
 Usage:
   bash uninstall.sh              Interactive uninstall
-  bash uninstall.sh --force      Skip prompts, auto-backup config to Desktop
+  bash uninstall.sh --force      Skip prompts, auto-backup config to ~/.wifi_autoconfig_backups/
   bash uninstall.sh --help       Show this help message
 EOF
 }
 
 # ============================================================================
-# Backup config.json to Desktop
+# Backup config.json to ~/.wifi_autoconfig_backups/
 # ============================================================================
 backup_config() {
     if [ -f "$INSTALL_DIR/config.json" ]; then
+        mkdir -p "$BACKUP_DIR"
         cp "$INSTALL_DIR/config.json" "$DESKTOP_BACKUP"
         info "Config backed up to: $DESKTOP_BACKUP"
     fi
@@ -75,20 +78,23 @@ clean_init_lua() {
         return 0
     fi
 
-    if ! grep -qF 'wifi_ip_switcher' "$HAMMERSPOON_INIT" 2>/dev/null; then
-        info "No wifi_ip_switcher reference found in init.lua."
+    # Matches both the module name and the human-readable comment line we inject,
+    # so no dangling comment is left behind.
+    local pattern='wifi_autoconfig|Wi-Fi AutoConfig'
+
+    if ! grep -qiE "$pattern" "$HAMMERSPOON_INIT" 2>/dev/null; then
+        info "No module reference found in init.lua."
         return 0
     fi
 
     step "Cleaning ~/.hammerspoon/init.lua..."
 
-    # Remove lines containing wifi_ip_switcher
     local tmp_file=$(mktemp)
-    grep -v 'wifi_ip_switcher' "$HAMMERSPOON_INIT" > "$tmp_file" 2>/dev/null || true
+    grep -viE "$pattern" "$HAMMERSPOON_INIT" > "$tmp_file" 2>/dev/null || true
 
-    # If the file is now empty or only comments, keep it (don't break other modules)
+    # Leave the file in place even if only comments remain (don't break other modules)
     mv "$tmp_file" "$HAMMERSPOON_INIT"
-    info "Removed wifi_ip_switcher from init.lua."
+    info "Removed module references from init.lua."
 }
 
 # ============================================================================
@@ -128,7 +134,7 @@ main() {
     done
 
     echo ""
-    echo -e "${YELLOW}  hammerspoon-wifi-switcher uninstaller${NC}"
+    echo -e "${YELLOW}  Wi-Fi AutoConfig for Hammerspoon v${MODULE_VERSION} uninstaller${NC}"
     echo -e "${YELLOW}  =====================================${NC}"
     echo ""
 
@@ -143,7 +149,7 @@ main() {
         backup_config
     else
         if [ -f "$INSTALL_DIR/config.json" ]; then
-            read -p "Backup config.json to Desktop before uninstalling? (Y/n) " -r
+            read -p "Backup config.json to Desktop before uninstalling? (Y/n) " -r || true
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 backup_config
             else
@@ -152,7 +158,7 @@ main() {
         fi
 
         echo ""
-        read -p "Confirm uninstall hammerspoon-wifi-switcher? (y/N) " -r
+        read -p "Confirm uninstall Wi-Fi AutoConfig for Hammerspoon? (y/N) " -r || true
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             info "Uninstall cancelled."
             exit 0
@@ -165,7 +171,7 @@ main() {
 
     echo ""
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  hammerspoon-wifi-switcher UNINSTALLED${NC}"
+    echo -e "${GREEN}  Wi-Fi AutoConfig for Hammerspoon UNINSTALLED${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
     if [ -f "$DESKTOP_BACKUP" ]; then

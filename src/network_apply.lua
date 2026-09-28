@@ -1,14 +1,14 @@
 local notify = require("hs.notify")
-local core = require("wifi_ip_switcher.core")
-local config = require("wifi_ip_switcher.config")
-local utils = require("wifi_ip_switcher.utils")
-local ui = require("wifi_ip_switcher.ui.web_view")
-local i18n = require("wifi_ip_switcher.i18n")
+local core = require("wifi_autoconfig.core")
+local config = require("wifi_autoconfig.config")
+local utils = require("wifi_autoconfig.utils")
+local ui = require("wifi_autoconfig.ui.web_view")
+local i18n = require("wifi_autoconfig.i18n")
 
 local M = {}
 
-function M.buildNetworkReport(configSource)
-    local status = core.getCurrentWiFiStatus()
+function M.buildNetworkReport(configSource, cachedStatus)
+    local status = cachedStatus or core.getCurrentWiFiStatus()
     local ssid = status.ssid or i18n.t("unknown")
     local rssi = status.rssi or i18n.t("unknown")
     local wifiInterface = core.getWiFiServiceName()
@@ -40,7 +40,8 @@ function M.buildNetworkReport(configSource)
 end
 
 function M.showNetworkReport(ssid)
-    local currentSSID = core.getCurrentWiFiStatus().ssid or i18n.t("unknown")
+    local status = core.getCurrentWiFiStatus()
+    local currentSSID = status.ssid or i18n.t("unknown")
 
     if currentSSID ~= ssid then
         utils.log(i18n.t("log_ssid_changed", ssid, currentSSID))
@@ -59,7 +60,7 @@ function M.showNetworkReport(ssid)
         configSource = i18n.t("config_source_dhcp")
     end
 
-    local report = M.buildNetworkReport(configSource)
+    local report = M.buildNetworkReport(configSource, status)
     ui.showPopup("success", i18n.t("popup_title_config_success"), report)
     ui.syncHardwareStatusToUI()
 end
