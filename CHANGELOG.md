@@ -7,6 +7,27 @@ All notable changes to **Wi-Fi AutoConfig for Hammerspoon** are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Passwordless sudo setup** — `install.sh` now offers to write a passwordless sudoers rule to
+  `/etc/sudoers.d/hammerspoon_netconfig` (`<user> ALL=(ALL) NOPASSWD: /usr/sbin/networksetup`) so
+  network switches run silently. It is skipped automatically when passwordless sudo is already
+  configured, and the rule is validated with `visudo -cf` before writing.
+
+### Fixed
+
+- **WebView injection** — SSID values and editor config/network JSON are now HTML-escaped
+  (`escapeHtml`) and inline-script-escaped (`</script>` → `\u003c/script\u003e`) before being injected
+  into the editor popup, closing a local HTML-injection vector from attacker-controlled SSID names.
+- **IPv6 validation** — `config.lua` now validates IPv6 address, prefix length (1–128) and gateway in
+  `manual` v6 mode, with matching error messages in both locales.
+- **DNS active-check** — the post-apply DNS verification now uses exact set membership instead of
+  substring matching, so `8.8.8.8` is no longer falsely reported as active when the real value is
+  `8.8.8.88`.
+- **IPv6 report** — the network report now includes the IPv6 prefix length and gateway.
+
 ## [3.0.0] - 2026-09-29
 
 ### Added

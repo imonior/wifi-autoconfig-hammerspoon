@@ -35,6 +35,11 @@ local function loadTemplate(filename)
     end
 end
 
+-- 将 JSON 中的 < > 转义为 \u003c / \u003e，防止 </script> 穿透与脚本注入
+local function escapeForInlineScript(s)
+    return (s:gsub("[<>]", { ["<"] = "\\u003c", [">"] = "\\u003e" }))
+end
+
 -- Pre-load templates at module init time
 loadTemplate("editor.html")
 loadTemplate("popups.html")
@@ -60,8 +65,8 @@ function M.showEditor(configData)
     local html = loadTemplate("editor.html")
     if not html then return end
 
-    html = html:gsub("%%NETWORKS_PLACEHOLDER%%", function() return networksJson end)
-    html = html:gsub("%%CONFIG_PLACEHOLDER%%", function() return configJson end)
+    html = html:gsub("%%NETWORKS_PLACEHOLDER%%", function() return escapeForInlineScript(networksJson) end)
+    html = html:gsub("%%CONFIG_PLACEHOLDER%%", function() return escapeForInlineScript(configJson) end)
     html = html:gsub("%%LOCALE_PLACEHOLDER%%", function() return i18n.getLocale() end)
 
     local mainScreen = screen.mainScreen():frame()
@@ -182,7 +187,7 @@ function M.showPopup(mode, title, contentPayload)
         if not html then return end
 
         html = html:gsub("%%POPUP_MODE%%", function() return mode end)
-        html = html:gsub("%%POPUP_TITLE%%", function() return title end)
+        html = html:gsub("%%POPUP_TITLE%%", function() return utils.escapeHTML(title) end)
         
         local escapedContent = utils.escapeHTML(contentPayload or "")
         html = html:gsub("%%POPUP_CONTENT%%", function() return escapedContent end)

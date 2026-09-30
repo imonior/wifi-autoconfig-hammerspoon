@@ -56,6 +56,7 @@ This will:
 2. Download the project tarball and install to `~/.hammerspoon/wifi_autoconfig/`
 3. Inject `require("wifi_autoconfig.init")` into `~/.hammerspoon/init.lua` (idempotent)
 4. Reload Hammerspoon
+5. Optionally set up passwordless sudo for `/usr/sbin/networksetup` so network switches never prompt for a password
 
 ## Update
 
@@ -288,12 +289,12 @@ All network operations are **fully async** using `hs.timer.doAfter` — no block
 
 - macOS 13+ (tested on macOS 15 Sequoia)
 - Hammerspoon 0.4.3+
-- Sudo access (for `networksetup` commands — Hammerspoon will prompt on first use)
+- Sudo access (for `networksetup` commands — the installer can set up passwordless sudo, otherwise Hammerspoon prompts on first use)
 - Location Services access (optional, for Wi-Fi RSSI signal strength display)
 
 ## Troubleshooting
 
-**Sudo prompts**: The module uses `sudo networksetup` to change network settings. Hammerspoon will prompt for your password. If prompts are frequent, configure passwordless sudo for `networksetup` in `/etc/sudoers`.
+**Sudo prompts**: The module uses `sudo /usr/sbin/networksetup` to change network settings. During install, the installer can optionally write a passwordless sudoers rule to `/etc/sudoers.d/hammerspoon_netconfig`, so network switches run silently without prompting. If you skipped that step (or on a machine without the rule), configure it manually: run `sudo visudo -f /etc/sudoers.d/hammerspoon_netconfig` and add `<your-user> ALL=(ALL) NOPASSWD: /usr/sbin/networksetup`.
 
 **RSSI shows as Unknown**: macOS 15+ requires Location Services access for Wi-Fi signal info. Go to System Settings → Privacy & Security → Location Services → enable Hammerspoon. If unavailable, the signal line is hidden from popups.
 

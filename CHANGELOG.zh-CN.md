@@ -7,6 +7,25 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **免密 sudo 配置** —— `install.sh` 现可在安装时写入免密 sudoers 规则到
+  `/etc/sudoers.d/hammerspoon_netconfig`（`<用户名> ALL=(ALL) NOPASSWD: /usr/sbin/networksetup`），
+  使网络切换静默执行、不再弹密码框。若本机已配置免密则自动跳过，且写入前会用 `visudo -cf` 校验规则语法。
+
+### 修复
+
+- **WebView 注入** —— SSID 与编辑器配置/网络 JSON 现在会在注入到编辑器弹窗前做 HTML 转义
+  （`escapeHtml`）与内联脚本转义（`</script>` → `\u003c/script\u003e`），堵住由攻击者可控的 SSID 名称
+  引发的本地 HTML 注入漏洞。
+- **IPv6 校验** —— `config.lua` 现对 `manual` 模式的 IPv6 地址、前缀长度（1–128）与网关做校验，
+  并补充中英双语错误提示。
+- **DNS 生效检查** —— 应用后的 DNS 校验改用精确集合匹配，替代原来的子串匹配，
+  避免 `8.8.8.8` 被实际值 `8.8.8.88` 误判为已生效。
+- **IPv6 报告** —— 网络报告现补充显示 IPv6 前缀长度与网关。
+
 ## [3.0.0] - 2026-09-29
 
 ### 新增

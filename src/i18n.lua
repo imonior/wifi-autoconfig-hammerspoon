@@ -129,6 +129,9 @@ local locales = {
         ui_invalid_netmask = "子网掩码格式错误",
         ui_invalid_gateway = "网关地址格式错误",
         ui_invalid_dns = "DNS服务器地址格式错误",
+        ui_invalid_ipv6 = "IPv6 地址格式错误",
+        ui_invalid_v6prefix = "IPv6 前缀长度格式错误",
+        ui_invalid_v6gateway = "IPv6 网关地址格式错误",
         ui_save_success = "配置已保存",
         ui_delete_success = "网络配置已删除",
 
@@ -266,6 +269,9 @@ local locales = {
         ui_invalid_netmask = "Invalid subnet mask format",
         ui_invalid_gateway = "Invalid gateway address format",
         ui_invalid_dns = "Invalid DNS server address format",
+        ui_invalid_ipv6 = "Invalid IPv6 address format",
+        ui_invalid_v6prefix = "Invalid IPv6 prefix length",
+        ui_invalid_v6gateway = "Invalid IPv6 gateway address",
         ui_save_success = "Configuration saved",
         ui_delete_success = "Network configuration deleted",
 

@@ -15,7 +15,7 @@ function M.buildNetworkReport(configSource, cachedStatus)
     local wifiDevice = core.getWiFiDevice()
     local ip, gw, nm, v4mode = core.getCurrentIPv4Info(wifiInterface)
     local activeDns = core.getActiveDNS()
-    local v6mode, v6ip = core.getCurrentIPv6Info(wifiInterface)
+    local v6mode, v6ip, v6prefix, v6gw = core.getCurrentIPv6Info(wifiInterface)
 
     local report = i18n.t("label_ssid") .. ": " .. ssid .. "\n"
     if rssi and rssi ~= i18n.t("unknown") then
@@ -30,7 +30,10 @@ function M.buildNetworkReport(configSource, cachedStatus)
         i18n.t("label_gateway") .. ": " .. gw .. "\n\n" ..
         i18n.t("label_ipv6") .. "\n" ..
         i18n.t("label_mode") .. ": " .. v6mode .. "\n" ..
-        i18n.t("label_address") .. ": " .. v6ip .. "\n\n" ..
+        i18n.t("label_address") .. ": " .. v6ip .. "\n" ..
+        (v6prefix ~= "" and (i18n.t("label_prefix") .. ": " .. v6prefix .. "\n") or "") ..
+        (v6gw ~= "" and (i18n.t("label_gateway") .. ": " .. v6gw .. "\n") or "") ..
+        "\n" ..
         i18n.t("label_dns") .. "\n" ..
         activeDns .. "\n\n" ..
         i18n.t("label_system") .. "\n" ..
@@ -85,8 +88,10 @@ function M.applyConfigToInterface(wifiInterface, setting, callback)
             if targetDns:match("%S") then
                 utils.waitForCondition(function()
                     local activeDns = core.getActiveDNS()
+                    local activeSet = {}
+                    for entry in string.gmatch(activeDns, "[^,%s]+") do activeSet[entry] = true end
                     for dnsEntry in string.gmatch(targetDns, "[^,%s]+") do
-                        if not activeDns:find(dnsEntry, 1, true) then
+                        if not activeSet[dnsEntry] then
                             return false
                         end
                     end

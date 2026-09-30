@@ -29,11 +29,35 @@ local function isValidDNSEntry(str)
     return true
 end
 
+local function isValidIPv6(str)
+    if not str or str == "" then return false end
+    if not str:match("^[%x:%%]+$") then return false end
+    if str:match(":::") then return false end
+    local colons = 0
+    for _ in str:gmatch(":") do colons = colons + 1 end
+    if colons > 7 then return false end
+    return true
+end
+
+local function isValidIPv6Prefix(str)
+    if not str or str == "" then return false end
+    local n = tonumber(str)
+    return n and n >= 1 and n <= 128
+end
+
 local function validateConfig(d)
     if d.mode == "manual" then
         if not isValidIPv4(d.ip) then return false, i18n.t("ui_invalid_ip") end
         if d.netmask and d.netmask ~= "" and not isValidIPv4(d.netmask) then return false, i18n.t("ui_invalid_netmask") end
         if d.gateway and d.gateway ~= "" and not isValidIPv4(d.gateway) then return false, i18n.t("ui_invalid_gateway") end
+    end
+    if d.v6mode == "manual" then
+        if not d.ipv6 or d.ipv6 == "" then return false, i18n.t("ui_invalid_ipv6") end
+        if not isValidIPv6(d.ipv6) then return false, i18n.t("ui_invalid_ipv6") end
+        if not d.v6prefix or d.v6prefix == "" then return false, i18n.t("ui_invalid_v6prefix") end
+        if not isValidIPv6Prefix(d.v6prefix) then return false, i18n.t("ui_invalid_v6prefix") end
+        if not d.v6gateway or d.v6gateway == "" then return false, i18n.t("ui_invalid_v6gateway") end
+        if not isValidIPv6(d.v6gateway) then return false, i18n.t("ui_invalid_v6gateway") end
     end
     if d.dns and d.dns ~= "" and not isValidDNSEntry(d.dns) then return false, i18n.t("ui_invalid_dns") end
     return true

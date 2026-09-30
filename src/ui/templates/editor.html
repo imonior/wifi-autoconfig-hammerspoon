@@ -317,6 +317,12 @@
         locale = lang === 'en' ? 'en' : 'zh';
     }
     
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        })[c]);
+    }
+    
     function applyI18n() {
         document.getElementById('header-networks').textContent = t('wifi_networks');
         document.getElementById('header-panel').textContent = t('config_panel');
@@ -454,7 +460,7 @@
             const currentItem = document.createElement("div");
             currentItem.className = "list-item current-connected primary-section";
             const hasConfig = configSsidSet.has(currentSSID);
-            currentItem.innerHTML = `<span>📶 ${currentSSID}</span>` + (hasConfig ? `<span style="color:#4CAF50;">●</span>` : "");
+            currentItem.innerHTML = `<span>📶 ${escapeHtml(currentSSID)}</span>` + (hasConfig ? `<span style="color:#4CAF50;">●</span>` : "");
             currentItem.onclick = () => selectSSID(currentSSID, currentItem);
             listContainer.appendChild(currentItem);
         }
@@ -462,7 +468,7 @@
         if (hasDefault) {
             const defaultItemEl = document.createElement("div");
             defaultItemEl.className = "list-item primary-section";
-            defaultItemEl.innerHTML = `<span>${t('global_fallback')}</span>` + `<span style="color:#4CAF50;">●</span>`;
+            defaultItemEl.innerHTML = `<span>${escapeHtml(t('global_fallback'))}</span>` + `<span style="color:#4CAF50;">●</span>`;
             defaultItemEl.onclick = () => selectSSID(defaultItem, defaultItemEl);
             listContainer.appendChild(defaultItemEl);
         }
@@ -477,7 +483,7 @@
                 if (ssid === currentSSID) return;
                 const item = document.createElement("div");
                 item.className = "list-item";
-                item.innerHTML = `<span>${ssid}</span>` + `<span style="color:#4CAF50;">●</span>`;
+                item.innerHTML = `<span>${escapeHtml(ssid)}</span>` + `<span style="color:#4CAF50;">●</span>`;
                 item.onclick = () => selectSSID(ssid, item);
                 listContainer.appendChild(item);
             });
@@ -493,7 +499,7 @@
                 if (ssid === currentSSID) return;
                 const item = document.createElement("div");
                 item.className = "list-item unconfigured";
-                item.innerHTML = `<span>${ssid}</span>`;
+                item.innerHTML = `<span>${escapeHtml(ssid)}</span>`;
                 item.onclick = () => selectSSID(ssid, item);
                 listContainer.appendChild(item);
             });

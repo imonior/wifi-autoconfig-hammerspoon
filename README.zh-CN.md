@@ -56,6 +56,7 @@ bash install.sh --proxy https://ghfast.top/
 2. 下载项目压缩包并安装到 `~/.hammerspoon/wifi_autoconfig/`
 3. 向 `~/.hammerspoon/init.lua` 注入 `require("wifi_autoconfig.init")`（幂等）
 4. 重载 Hammerspoon
+5. 可选：为 `/usr/sbin/networksetup` 配置免密 sudo，使网络切换不再弹密码框
 
 ## 更新
 
@@ -279,12 +280,12 @@ wifi-autoconfig-hammerspoon/
 
 - macOS 13+（已在 macOS 15 Sequoia 上测试）
 - Hammerspoon 0.4.3+
-- sudo 权限（用于 `networksetup` 命令 — 首次使用时 Hammerspoon 会提示输入密码）
+- sudo 权限（用于 `networksetup` 命令 — 安装器可配置免密 sudo，否则首次使用时 Hammerspoon 会提示输入密码）
 - 定位服务权限（可选，用于显示 Wi-Fi RSSI 信号强度）
 
 ## 常见问题
 
-**Sudo 提示**：模块使用 `sudo networksetup` 修改网络设置，Hammerspoon 会提示输入密码。若提示频繁，可在 `/etc/sudoers` 中为 `networksetup` 配置免密 sudo。
+**Sudo 提示**：模块使用 `sudo /usr/sbin/networksetup` 修改网络设置。安装时安装器可选择性写入免密 sudoers 规则到 `/etc/sudoers.d/hammerspoon_netconfig`，使网络切换静默执行、不再弹密码框。若跳过该步骤（或本机无此规则），可手动配置：运行 `sudo visudo -f /etc/sudoers.d/hammerspoon_netconfig` 并添加 `<你的用户名> ALL=(ALL) NOPASSWD: /usr/sbin/networksetup`。
 
 **RSSI 显示为 Unknown**：macOS 15+ 需要定位服务权限才能获取 Wi-Fi 信号信息。进入「系统设置 → 隐私与安全性 → 定位服务」→ 启用 Hammerspoon。若不可用，弹窗将隐藏信号行。
 
