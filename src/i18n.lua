@@ -1,7 +1,7 @@
 -- ~/.hammerspoon/wifi_autoconfig/i18n.lua
 local M = {}
 
-M.VERSION = "3.0.0"
+M.VERSION = "3.2.0"
 
 local locales = {
     zh = {
@@ -96,11 +96,13 @@ local locales = {
         menu_status_vpn_header = "🔐 VPN / 虚拟网卡",
         menu_status_vpn_interface = "接口",
         menu_status_disconnected = "未连接",
+        menu_vpn_default_egress = "默认出口",
         menu_status_connected = "已连接",
         menu_status_disabled = "已禁用",
 
         menu_label_ssid = "SSID",
         menu_label_ipv4 = "IPv4",
+        menu_label_ipv4_with_gw = "IPv4/gateway",
         menu_label_ip = "IP",
         menu_label_netmask = "子网掩码",
         menu_label_gateway = "网关",
@@ -109,7 +111,6 @@ local locales = {
         menu_label_dns = "DNS",
 
         label_ssid = "📶 SSID",
-        label_signal = "📡 信号强度",
         label_config_source = "🔧 配置来源",
         label_ipv4 = "━━━━━━━━ IPv4 ━━━━━━━━",
         label_ipv6 = "━━━━━━━━ IPv6 ━━━━━━━━",
@@ -236,11 +237,13 @@ local locales = {
         menu_status_vpn_header = "🔐 VPN / Virtual NIC",
         menu_status_vpn_interface = "Interface",
         menu_status_disconnected = "Not Connected",
+        menu_vpn_default_egress = "Default egress",
         menu_status_connected = "Connected",
         menu_status_disabled = "Disabled",
 
         menu_label_ssid = "SSID",
         menu_label_ipv4 = "IPv4",
+        menu_label_ipv4_with_gw = "IPv4/gateway",
         menu_label_ip = "IP",
         menu_label_netmask = "Subnet Mask",
         menu_label_gateway = "Gateway",
@@ -249,7 +252,6 @@ local locales = {
         menu_label_dns = "DNS",
 
         label_ssid = "📶 SSID",
-        label_signal = "📡 Signal",
         label_config_source = "🔧 Source",
         label_ipv4 = "━━━━━━━━ IPv4 ━━━━━━━━",
         label_ipv6 = "━━━━━━━━ IPv6 ━━━━━━━━",

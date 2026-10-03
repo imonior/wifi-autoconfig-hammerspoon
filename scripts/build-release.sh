@@ -143,8 +143,8 @@ cat > "$RELEASE_HTML" <<'HTML_EOF'
     </tr>
     <tr>
       <td><code>src/</code></td>
-      <td class="en">All Lua modules (init / core / config / utils / i18n / menu_builder / network_apply / ui)</td>
-      <td class="zh">全部 Lua 模块（init / core / config / utils / i18n / menu_builder / network_apply / ui）</td>
+      <td class="en">All Lua modules (init / core / config / utils / i18n / menu_builder / network_apply / panel / ui)</td>
+      <td class="zh">全部 Lua 模块（init / core / config / utils / i18n / menu_builder / network_apply / panel / ui）</td>
     </tr>
     <tr>
       <td><code>scripts/</code></td>
@@ -242,7 +242,7 @@ A Hammerspoon-based macOS Wi-Fi network auto-switching tool. This release ships 
 
 ## What's in the bundle / 发布包内容
 
-- \`src/\` — all Lua modules (init / core / config / utils / i18n / menu_builder / network_apply / ui)
+- \`src/\` — all Lua modules (init / core / config / utils / i18n / menu_builder / network_apply / panel / ui)
 - \`scripts/\` — install.sh · uninstall.sh · legacy-install.sh · legacy-uninstall.sh
 - \`config.example.json\`, \`LICENSE\`, \`README.md\` / \`README.zh-CN.md\`, \`CHANGELOG.md\` / \`CHANGELOG.zh-CN.md\`
 

@@ -88,7 +88,7 @@ function M.getPreferredNetworks()
 end
 
 function M.getCurrentWiFiStatus()
-    local status = {connected = false, ssid = nil, rssi = nil, powerState = nil}
+    local status = {connected = false, ssid = nil, powerState = nil}
     
     -- Check WiFi power state
     local wifiDevice = M.getWiFiDevice() or "en0"
@@ -129,30 +129,11 @@ function M.getCurrentWiFiStatus()
     
     if status.connected and status.ssid then
         local details = wifi.interfaceDetails()
-        if details then
-            if details.rssi then
-                status.rssi = tonumber(details.rssi)
-            end
-            if details.ssid and not status.ssid then
-                status.ssid = details.ssid
-            end
-        end
-        
-        if not status.rssi then
-            local cmd = "/usr/sbin/system_profiler SPAirPortDataType"
-            local handle = io.popen(cmd)
-            if handle then
-                local result = handle:read("*a")
-                handle:close()
-                
-                local signal = result:match("Signal / Noise:%s*([-%d]+)")
-                if signal then
-                    status.rssi = tonumber(signal)
-                end
-            end
+        if details and details.ssid and not status.ssid then
+            status.ssid = details.ssid
         end
     end
-    
+
     return status
 end
 
@@ -473,13 +454,23 @@ local function determineClashAppName(processList, listeningMap, apiPort)
 end
 
 local function getClashAppInfos(processList, listeningMap)
+    -- Skip the local API probes entirely unless a Clash-family process is
+    -- actually running: otherwise the 4 sequential curls just hit
+    -- connection-refused and waste a full status refresh. This is the single
+    -- heaviest part of getVPNInfo (it now also runs on a background timer).
+    if not processList or not (processList:match("Clash") or processList:match("FlClash")
+            or processList:match("FlClashCore") or processList:match("[Kk]aring")
+            or processList:match("sing%-box") or processList:match("mihomo")) then
+        return {}
+    end
+
     local ports = { "9090", "9097", "7892", "11227" }
     local infos = {}
     local seenPorts = {}
 
     for _, port in ipairs(ports) do
         if not seenPorts[port] then
-            local handle = io.popen("curl -s --connect-timeout 1 http://127.0.0.1:" .. port .. "/configs 2>/dev/null")
+            local handle = io.popen("curl -s --connect-timeout 0.3 http://127.0.0.1:" .. port .. "/configs 2>/dev/null")
             if handle then
                 local result = handle:read("*a")
                 handle:close()
@@ -499,7 +490,7 @@ local function getClashAppInfos(processList, listeningMap)
                     local hasConnections = true
                     if not tunEnabled then
                         hasConnections = false
-                        local connHandle = io.popen("curl -s --connect-timeout 1 http://127.0.0.1:" .. port .. "/connections 2>/dev/null")
+                        local connHandle = io.popen("curl -s --connect-timeout 0.3 http://127.0.0.1:" .. port .. "/connections 2>/dev/null")
                         if connHandle then
                             local connResult = connHandle:read("*a")
                             connHandle:close()
@@ -702,8 +693,87 @@ local function getProxyVPNs(processList, existingVPNs, clashAppInfos, listeningM
     return proxyVPNs
 end
 
+local function parseDefaultRoutes(family)
+    local byInterface = {}
+    local handle = io.popen("/usr/sbin/netstat -rn -f " .. family .. " 2>/dev/null")
+    if handle then
+        local result = handle:read("*a")
+        handle:close()
+        for line in result:gmatch("[^\r\n]+") do
+            local toks = {}
+            for word in line:gmatch("%S+") do table.insert(toks, word) end
+            if toks[1] == "default" and toks[2] and #toks >= 3 then
+                -- Netif position varies by macOS version (Refs/Use columns may be omitted),
+                -- so take the last token that looks like an interface name (en0, utun5, ...).
+                local iface = nil
+                for i = #toks, 3, -1 do
+                    if toks[i]:match("^%a+%d+$") then
+                        iface = toks[i]
+                        break
+                    end
+                end
+                if iface then
+                    byInterface[iface] = byInterface[iface] or {}
+                    if not byInterface[iface].gateway then
+                        byInterface[iface].gateway = toks[2]
+                    end
+                end
+            end
+        end
+    end
+    return byInterface
+end
+
+-- utun tunnels install their default route with a link-layer gateway (link#N),
+-- so the usable IPv4 gateway has to come from the interface's point-to-point
+-- peer address, reported by ifconfig as "inet <local> --> <peer>".
+local function getInterfacePeerGateways()
+    local peers = {}
+    local handle = io.popen("/sbin/ifconfig 2>/dev/null")
+    if not handle then return peers end
+    local result = handle:read("*a")
+    handle:close()
+
+    local currentInterface = nil
+    for line in result:gmatch("[^\r\n]+") do
+        local name = line:match("^(%w[%w%d]+):")
+        if name then
+            currentInterface = name
+            peers[name] = peers[name] or {}
+        elseif currentInterface and peers[currentInterface] then
+            -- NOTE: "-->" must stay unescaped; in Lua patterns "%->" only matches "->"
+            -- (the "%>" swallows the ">"), which never matches real ifconfig output.
+            local peer = line:match("inet%d*%s+(%d+%.%d+%.%d+%.%d+)%s+-->%s+(%d+%.%d+%.%d+%.%d+)")
+            if peer then
+                peers[currentInterface].gateway = peer
+            end
+        end
+    end
+    return peers
+end
+
+local function getDefaultRouteInterface(isIPv6)
+    local familyFlag = isIPv6 and " -inet6" or ""
+    local handle = io.popen("/sbin/route -n get" .. familyFlag .. " default 2>/dev/null")
+    if not handle then return nil end
+    local result = handle:read("*a")
+    handle:close()
+    return result:match("interface:%s*(%S+)")
+end
+
+local function getVPNRouteMap()
+    return {
+        v4 = parseDefaultRoutes("inet"),
+        v6 = parseDefaultRoutes("inet6"),
+        peers = getInterfacePeerGateways(),
+        defaultIface4 = getDefaultRouteInterface(false),
+        defaultIface6 = getDefaultRouteInterface(true)
+    }
+end
+
 function M.getVPNInfo()
     local vpnInfo = {}
+    local routeMap = getVPNRouteMap()
     local wifiDevice = M.getWiFiDevice() or "en0"
 
     local processList = getRunningProcesses()
@@ -719,6 +789,28 @@ function M.getVPNInfo()
 
     local proxyVPNs = getProxyVPNs(processList, vpnInfo, clashAppInfos, listeningMap)
     for _, v in ipairs(proxyVPNs) do table.insert(vpnInfo, v) end
+
+    for _, v in ipairs(vpnInfo) do
+        if v.interface then
+            local r4 = routeMap.v4[v.interface]
+            local r6 = routeMap.v6[v.interface]
+            local gateway4 = r4 and r4.gateway or nil
+            -- Prefer a real routable gateway; when the route table only offers
+            -- link#N for this interface, fall back to the tunnel peer address.
+            if (not gateway4 or gateway4:match("^link#")) and routeMap.peers[v.interface] then
+                gateway4 = routeMap.peers[v.interface].gateway
+            end
+            if gateway4 and gateway4 ~= "" or r6 then
+                v.route = { gateway4 = (gateway4 and gateway4 ~= "") and gateway4 or nil, gateway6 = r6 and r6.gateway or nil }
+            end
+            v.defaultEgress4 = (routeMap.defaultIface4 == v.interface)
+            v.defaultEgress6 = (routeMap.defaultIface6 == v.interface)
+        else
+            v.route = nil
+            v.defaultEgress4 = false
+            v.defaultEgress6 = false
+        end
+    end
 
     return vpnInfo
 end

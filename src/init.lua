@@ -13,9 +13,17 @@ local ui = require("wifi_autoconfig.ui.web_view")
 local i18n = require("wifi_autoconfig.i18n")
 local menuBuilder = require("wifi_autoconfig.menu_builder")
 local networkApply = require("wifi_autoconfig.network_apply")
+local panel = require("wifi_autoconfig.panel")
 
 local M = {}
-M.VERSION = "3.0.0"
+M.VERSION = "3.2.0"
+
+-- The status list is drawn by panel.lua on its own dark surface. Set this to
+-- false to go back to the native hs.menubar menu: it keeps the system menu
+-- material (light grey in light appearance), which is what made the amber and
+-- the green unreadable, and it cannot stop informational rows from lighting up
+-- on hover.
+local USE_PANEL_MENU = true
 
 local modulePath = utils.modulePath
 local logFilePath = utils.logFilePath
@@ -158,6 +166,50 @@ local function handleForceApply(data)
     end)
 end
 
+-- Row model for the self-drawn panel: the status rows come from the shared
+-- builder, then the four commands are appended as the interactive section.
+local function buildPanelModel()
+    refreshNetworkStatusCache(false)
+
+    local ok, rows = pcall(function()
+        return menuBuilder.buildStatusRows(cachedNetworkStatus)
+    end)
+    if not ok or type(rows) ~= "table" then
+        utils.log("buildStatusRows error: " .. tostring(rows))
+        rows = {}
+    end
+
+    -- buildStatusRows() already closes with a separator, so the commands can
+    -- follow straight away.
+    rows[#rows + 1] = { kind = "action", id = "settings", text = "⚙️ " .. i18n.t("menu_open_settings") }
+    rows[#rows + 1] = { kind = "action", id = "logs", text = "📋 " .. i18n.t("menu_view_logs") }
+    rows[#rows + 1] = { kind = "action", id = "dhcp", text = "🔄 " .. i18n.t("menu_update_dhcp") }
+    rows[#rows + 1] = { kind = "action", id = "detect", text = "🔍 " .. i18n.t("menu_force_detect") }
+
+    return {
+        rows = rows,
+        actions = {
+            settings = function() ui.showEditor(config.current) end,
+            logs = function()
+                local f = io.open(logFilePath, "r")
+                local content = ""
+                if f then
+                    content = f:read("*a")
+                    f:close()
+                end
+                ui.showPopup("log", i18n.t("recent_system_logs"), content)
+            end,
+            dhcp = function() networkApply.setCurrentNetworkToDHCP() end,
+            detect = function()
+                utils.log(i18n.t("log_manual_detect"))
+                currentSSID = nil
+                invalidateStatusCache()
+                M.performNetworkAudit()
+            end
+        }
+    }
+end
+
 local function buildMenuBar()
     if not M.menuBarItem then
         M.menuBarItem = menubar.new()
@@ -171,52 +223,58 @@ local function buildMenuBar()
             M.menuBarItem:setTitle("📶")
         end
         
-        M.menuBarItem:setMenu(function()
-            refreshNetworkStatusCache(false)
+        local panelReady = USE_PANEL_MENU and panel.attach(M.menuBarItem, buildPanelModel)
 
-            local success, result = pcall(function()
-                return menuBuilder.buildNetworkStatusMenuItems(cachedNetworkStatus)
-            end)
+        if panelReady then
+            -- The self-drawn panel owns the item; there is no NSMenu to build.
+        else
+            M.menuBarItem:setMenu(function()
+                refreshNetworkStatusCache(false)
+
+                local success, result = pcall(function()
+                    return menuBuilder.buildNetworkStatusMenuItems(cachedNetworkStatus)
+                end)
             
-            local menuItems = {}
-            if success and type(result) == "table" then
-                menuItems = result
-            elseif not success then
-                utils.log("buildNetworkStatusMenuItems error: " .. tostring(result))
-            end
+                local menuItems = {}
+                if success and type(result) == "table" then
+                    menuItems = result
+                elseif not success then
+                    utils.log("buildNetworkStatusMenuItems error: " .. tostring(result))
+                end
             
-            table.insert(menuItems, { 
-                title = styledtext.new("⚙️ " .. i18n.t("menu_open_settings"), { font = { size = 12 } }),
-                fn = function() ui.showEditor(config.current) end
-            })
-            table.insert(menuItems, { 
-                title = styledtext.new("📋 " .. i18n.t("menu_view_logs"), { font = { size = 12 } }),
-                fn = function() 
-                    local f = io.open(logFilePath, "r")
-                    local content = ""
-                    if f then
-                        content = f:read("*a")
-                        f:close()
+                table.insert(menuItems, { 
+                    title = styledtext.new("⚙️ " .. i18n.t("menu_open_settings"), { font = { size = 12 } }),
+                    fn = function() ui.showEditor(config.current) end
+                })
+                table.insert(menuItems, { 
+                    title = styledtext.new("📋 " .. i18n.t("menu_view_logs"), { font = { size = 12 } }),
+                    fn = function() 
+                        local f = io.open(logFilePath, "r")
+                        local content = ""
+                        if f then
+                            content = f:read("*a")
+                            f:close()
+                        end
+                        ui.showPopup("log", i18n.t("recent_system_logs"), content) 
                     end
-                    ui.showPopup("log", i18n.t("recent_system_logs"), content) 
-                end
-            })
-            table.insert(menuItems, { 
-                title = styledtext.new("🔄 " .. i18n.t("menu_update_dhcp"), { font = { size = 12 } }),
-                fn = function() networkApply.setCurrentNetworkToDHCP() end
-            })
-            table.insert(menuItems, { 
-                title = styledtext.new("🔍 " .. i18n.t("menu_force_detect"), { font = { size = 12 } }),
-                fn = function() 
-                    utils.log(i18n.t("log_manual_detect"))
-                    currentSSID = nil
-                    invalidateStatusCache()
-                    M.performNetworkAudit()
-                end
-            })
+                })
+                table.insert(menuItems, { 
+                    title = styledtext.new("🔄 " .. i18n.t("menu_update_dhcp"), { font = { size = 12 } }),
+                    fn = function() networkApply.setCurrentNetworkToDHCP() end
+                })
+                table.insert(menuItems, { 
+                    title = styledtext.new("🔍 " .. i18n.t("menu_force_detect"), { font = { size = 12 } }),
+                    fn = function() 
+                        utils.log(i18n.t("log_manual_detect"))
+                        currentSSID = nil
+                        invalidateStatusCache()
+                        M.performNetworkAudit()
+                    end
+                })
             
-            return menuItems
-        end)
+                return menuItems
+            end)
+        end
     end
 end
 
@@ -254,10 +312,31 @@ function M.init()
     
     M.performNetworkAudit()
     
+    -- Populate the status cache once at startup so the very first menu/panel
+    -- open is instant, then keep it warm on a background timer. The timer means
+    -- opening the status menu (which only reads the cache now) never blocks on
+    -- the ~20 shell processes that build the network snapshot. With the Clash
+    -- probes gated in core.lua, the periodic refresh is cheap when no proxy is
+    -- running.
+    refreshNetworkStatusCache(true)
+    if M.statusTimer then pcall(function() M.statusTimer:stop() end) end
+    M.statusTimer = timer.doEvery(STATUS_CACHE_TTL, function()
+        refreshNetworkStatusCache(true)
+    end)
+
     timer.doAfter(2, function()
         ui.syncHardwareStatusToUI()
     end)
-    
+
+    -- Tear down the panel webview, its event tap, and the timers on reload or
+    -- shutdown so repeated "Reload Config" calls don't leak zombie windows or
+    -- accumulate stale taps/timers from the previous module instance.
+    hs.shutdownCallback = function()
+        pcall(function() if M.statusTimer then M.statusTimer:stop() end end)
+        pcall(panel.hide)
+        pcall(panel.destroy)
+    end
+
     utils.log(i18n.t("log_init_success"))
 end
 

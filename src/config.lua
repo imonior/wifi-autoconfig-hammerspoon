@@ -138,10 +138,8 @@ function M.registerURLSchemes(onConfigChangedCallback, onForceApply, onFetchInfo
         return data
     end
 
-    urlevent.bind("force_apply_network", function(eventName, params)
-        if onForceApply then onForceApply(handleForceApply(params)) end
-    end)
-    
+    -- The editor only ever calls force_apply_network_with_confirm; the bare
+    -- force_apply_network handler was dead code and has been removed.
     urlevent.bind("force_apply_network_with_confirm", function(eventName, params)
         if onForceApply then onForceApply(handleForceApply(params)) end
     end)

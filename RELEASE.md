@@ -1,4 +1,4 @@
-# Wi-Fi AutoConfig for Hammerspoon v3.1.0
+# Wi-Fi AutoConfig for Hammerspoon v3.2.0
 
 A Hammerspoon-based macOS Wi-Fi network auto-switching tool. This release ships a
 **self-contained offline install bundle** — download the zip, extract, and run
@@ -9,14 +9,14 @@ A Hammerspoon-based macOS Wi-Fi network auto-switching tool. This release ships 
 
 ## What's in the bundle / 发布包内容
 
-- `src/` — all Lua modules (init / core / config / utils / i18n / menu_builder / network_apply / ui)
+- `src/` — all Lua modules (init / core / config / utils / i18n / menu_builder / network_apply / panel / ui)
 - `scripts/` — install.sh · uninstall.sh · legacy-install.sh · legacy-uninstall.sh
 - `config.example.json`, `LICENSE`, `README.md` / `README.zh-CN.md`, `CHANGELOG.md` / `CHANGELOG.zh-CN.md`
 
 ## Offline install / 离线安装
 
 ```bash
-unzip wifi-autoconfig-hammerspoon-v3.1.0.zip
+unzip wifi-autoconfig-hammerspoon-v3.2.0.zip
 cd wifi-autoconfig-hammerspoon
 bash scripts/install.sh
 ```

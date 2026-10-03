@@ -16,6 +16,7 @@ Automatically switches network configurations (static IP / DHCP / custom DNS / I
 - **Force-apply from editor** — Apply editor contents directly to the network interface without saving, with a confirmation dialog showing full config details
 - **WebView configuration editor** — Built-in HTML/CSS UI for managing network profiles with live hardware status sync
 - **Menu bar integration** — Quick access to settings, logs, DHCP reset, and force re-detection
+- **Self-drawn status panel** — the menu-bar status view is a custom borderless WebKit panel with a fixed dark surface, so the amber/green section colours stay readable in both light and dark mode and informational rows never highlight on hover (falls back to the native menu automatically)
 - **Bilingual (zh/en)** — Auto-detects system language via `hs.host.locale`
 - **7-day log rotation** — Automatic cleanup of log entries older than 7 days
 - **Startup auto-apply** — On Hammerspoon load, applies the current SSID's config with retry logic (5 attempts, 1s interval) for Wi-Fi readiness

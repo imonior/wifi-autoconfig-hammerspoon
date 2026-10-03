@@ -7,6 +7,24 @@ All notable changes to **Wi-Fi AutoConfig for Hammerspoon** are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-10-03
+
+### Added
+
+- **Self-drawn status panel** — the menu-bar status view is now a custom borderless WebKit panel instead of a native `NSMenu`. This pins a single dark palette for both light and dark appearance (the amber and green were unreadable on the macOS menu material) and lets the informational rows stay inert on hover. It falls back to the native menu automatically if the webview cannot be created.
+
+### Changed
+
+- **Background status polling** — the network snapshot (Wi-Fi, IP, DNS, VPN) is now refreshed on a 5s background timer instead of synchronously on every menu open, so opening the status menu is instant instead of blocking on ~20 shell processes.
+- **Lighter VPN detection** — the Clash-compatible API probes are skipped entirely unless a Clash-family process (Clash / FlClash / sing-box / mihomo / Karing) is actually running, and the probe timeout was lowered from 1s to 0.3s.
+
+### Fixed
+
+- **System-freezing event tap** — hover tracking no longer installs a `mouseMoved` CGEventTap (that tap froze the system pointer machine-wide); it now polls `hs.mouse.getAbsolutePosition()` on a timer, which cannot freeze the pointer.
+- **Panel lifecycle** — the panel's webview, event tap, and timers are torn down on Hammerspoon reload/shutdown, preventing zombie windows from accumulating across Reload Config.
+- Removed the unused `force_apply_network` URL handler (the editor only uses `force_apply_network_with_confirm`).
+- Version strings in `init.lua` / `i18n.lua` are aligned with `install.sh` (now 3.2.0).
+
 ## [3.1.0] - 2026-09-30
 
 ### Added

@@ -4,6 +4,10 @@ local i18n = require("wifi_autoconfig.i18n")
 
 local M = {}
 
+-- The blue square (🟦) blue, sampled from the system emoji rendering. It is the
+-- colour of every detail label in the menu (SSID, IPv4 mode, IPv6 mode, DNS ...).
+local ACCENT_BLUE = "#055DF2"
+
 local DARK_MODE_TTL = 5
 local cachedDarkMode = nil
 local cachedDarkModeTime = 0
@@ -27,29 +31,46 @@ function M.detectDarkMode()
 end
 
 function M.buildColors(isDarkMode)
+    -- The menu panel keeps the macOS native (light grey) surface: hs.menubar
+    -- exposes no API to tint it (libmenubar.m has no background/appearance
+    -- handling at all), so legibility has to come from the text colours.
     return {
-        wifiHeader = isDarkMode and "#64B5F6" or "#002171",
-        vpnHeader = isDarkMode and "#FFB74D" or "#8B2500",
-        subsection = isDarkMode and "#90CAF9" or "#0D47A1",
-        connected = isDarkMode and "#4CAF50" or "#1B5E20",
-        disconnected = isDarkMode and "#FF7043" or "#B71C1C",
-        normal = isDarkMode and "#FFFFFF" or "#000000",
-        muted = isDarkMode and "#888888" or "#5E35B1",
-        highlightBg = isDarkMode and "#333333" or "#E8E8E8",
-        highlightFg = isDarkMode and "#FFFFFF" or "#000000"
+        -- Shared section-title colour, used by both the Wi-Fi status section and
+        -- the VPN section so the two headers read as one family. It is the
+        -- warning amber: bright on a dark surface, darkened to a gold that still
+        -- clears ~3.5:1 against the light grey panel.
+        sectionHeader = isDarkMode and "#FFD34E" or "#A67C00",
+        -- Traffic-light status colours. Green is the only one that has to split
+        -- by appearance: #00FF00 has a relative luminance above the light panel,
+        -- so on the grey surface it washes out completely (~0.9:1). The darkened
+        -- green keeps the green meaning while staying readable in light mode.
+        connected = isDarkMode and "#00FF00" or "#008000",
+        -- Pure red reads on both surfaces (~3.5:1 light), so it stays the
+        -- traffic-light red in both appearances.
+        disconnected = "#FF0000"
     }
 end
 
 local function labelStyle(isDarkMode)
-    return { color = { hex = isDarkMode and "#90CAF9" or "#1565C0" } }
+    -- Detail labels (SSID, IPv4 mode, IPv6 mode, DNS ...) use the 🟦 blue.
+    return { color = { hex = ACCENT_BLUE } }
 end
 
-local function valueStyle(isDarkMode)
-    return { color = { hex = isDarkMode and "#E0E0E0" or "#333333" }, font = { size = 12 } }
+-- Body text deliberately carries no explicit colour: it simply inherits the
+-- menu's default foreground, which is exactly how the plain menu entries
+-- (e.g. "View Logs") are drawn. Only the size separates the two levels.
+local function valueStyle()
+    return { font = { size = 12 } }
 end
 
-local function mutedStyle(isDarkMode)
-    return { color = { hex = isDarkMode and "#AAAAAA" or "#666666" }, font = { size = 11 } }
+local function mutedStyle()
+    return { font = { size = 11 } }
+end
+
+-- Traffic-light dot prefixed to the VPN status line: green when connected,
+-- red when disconnected (mirrors the 🟢 / 🔴 status colours).
+local function vpnStatusDot(status)
+    return status == "Connected" and "🟢 " or "🔴 "
 end
 
 local function vpnStatusText(status)
@@ -59,17 +80,20 @@ local function vpnStatusText(status)
     return i18n.t("menu_status_disconnected")
 end
 
-function M.buildNetworkStatusMenuItems(cache)
-    local items = {}
+-- The row model is the single source of truth for what the status menu shows.
+-- Two renderers consume it:
+--   * panel.lua turns it into the self-drawn WebKit panel (the default UI),
+--   * rowsToMenuItems() turns it into hs.menubar entries (the fallback path,
+--     kept so the native menu can be restored with one flag in init.lua).
+-- Kinds: head | kv | label | muted | status | sep.
+function M.buildStatusRows(cache)
+    local rows = {}
     local status = cache.wifiStatus or {}
     local ip, gw, nm = cache.ipv4.ip, cache.ipv4.gw, cache.ipv4.nm
     local v4mode = cache.ipv4.mode
     local v6mode, v6ip, v6prefix, v6gw = cache.ipv6.mode, cache.ipv6.ip, cache.ipv6.prefix, cache.ipv6.gw
     local activeDns = cache.dns
     local vpnInfo = cache.vpnInfo or {}
-    local isDarkMode = cache.isDarkMode or false
-
-    local colors = M.buildColors(isDarkMode)
 
     local wifiStatusText
     if status.powerState == "Off" then
@@ -80,107 +104,125 @@ function M.buildNetworkStatusMenuItems(cache)
         wifiStatusText = i18n.t("menu_status_disconnected")
     end
 
-    table.insert(items, {
-        title = styledtext.new(i18n.t("menu_status_wifi_header") .. " (" .. wifiStatusText .. ")",
-            { color = { hex = colors.subsection }, font = { size = 13 } }),
-        disabled = true
-    })
+    rows[#rows + 1] = {
+        kind = "head",
+        text = i18n.t("menu_status_wifi_header") .. " (" .. wifiStatusText .. ")"
+    }
 
     if status.connected and status.ssid then
-        table.insert(items, {
-            title = styledtext.new("  " .. i18n.t("menu_label_ssid") .. ":", labelStyle(isDarkMode))
-                .. styledtext.new(" " .. status.ssid, valueStyle(isDarkMode)),
-            disabled = true
-        })
-        table.insert(items, {
-            title = styledtext.new("  " .. i18n.t("menu_label_ipv4") .. ": " .. tostring(v4mode), labelStyle(isDarkMode)),
-            disabled = true
-        })
+        rows[#rows + 1] = { kind = "kv", indent = 1, label = i18n.t("menu_label_ssid") .. ":", value = status.ssid }
+        rows[#rows + 1] = { kind = "label", indent = 1, text = i18n.t("menu_label_ipv4") .. ": " .. tostring(v4mode) }
         if ip and ip ~= "" then
-            table.insert(items, {
-                title = styledtext.new("    " .. i18n.t("menu_label_ip") .. ": " .. ip, valueStyle(isDarkMode)),
-                disabled = true
-            })
+            rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_label_ip") .. ": " .. ip }
             if nm and nm ~= "" then
-                table.insert(items, {
-                    title = styledtext.new("    " .. i18n.t("menu_label_netmask") .. ": " .. nm, valueStyle(isDarkMode)),
-                    disabled = true
-                })
+                rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_label_netmask") .. ": " .. nm }
             end
             if gw and gw ~= "" then
-                table.insert(items, {
-                    title = styledtext.new("    " .. i18n.t("menu_label_gateway") .. ": " .. gw, valueStyle(isDarkMode)),
-                    disabled = true
-                })
+                rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_label_gateway") .. ": " .. gw }
             end
         end
-        table.insert(items, {
-            title = styledtext.new("  " .. i18n.t("menu_label_ipv6") .. ": " .. tostring(v6mode), labelStyle(isDarkMode)),
-            disabled = true
-        })
+        rows[#rows + 1] = { kind = "label", indent = 1, text = i18n.t("menu_label_ipv6") .. ": " .. tostring(v6mode) }
         if v6mode ~= i18n.t("v6_off") and v6ip and v6ip ~= i18n.t("unassigned") then
-            table.insert(items, {
-                title = styledtext.new("    " .. i18n.t("menu_label_ip") .. ": " .. v6ip, valueStyle(isDarkMode)),
-                disabled = true
-            })
+            rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_label_ip") .. ": " .. v6ip }
             if v6prefix and v6prefix ~= "" then
-                table.insert(items, {
-                    title = styledtext.new("    " .. i18n.t("menu_label_prefix") .. ": /" .. v6prefix, valueStyle(isDarkMode)),
-                    disabled = true
-                })
+                rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_label_prefix") .. ": /" .. v6prefix }
             end
             if v6gw and v6gw ~= "" then
-                table.insert(items, {
-                    title = styledtext.new("    " .. i18n.t("menu_label_gateway") .. ": " .. v6gw, valueStyle(isDarkMode)),
-                    disabled = true
-                })
+                rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_label_gateway") .. ": " .. v6gw }
             end
         end
-        table.insert(items, {
-            title = styledtext.new("  " .. i18n.t("menu_label_dns") .. ":", labelStyle(isDarkMode))
-                .. styledtext.new(" " .. tostring(activeDns), valueStyle(isDarkMode)),
-            disabled = true
-        })
+        rows[#rows + 1] = { kind = "kv", indent = 1, label = i18n.t("menu_label_dns") .. ":", value = tostring(activeDns) }
     end
 
     if #vpnInfo > 0 then
-        table.insert(items, { title = "-" })
-        table.insert(items, {
-            title = styledtext.new(i18n.t("menu_status_vpn_header"), { color = { hex = colors.vpnHeader }, font = { size = 13 } }),
-            disabled = true
-        })
+        rows[#rows + 1] = { kind = "sep" }
+        rows[#rows + 1] = { kind = "head", text = i18n.t("menu_status_vpn_header") }
 
         for _, v in ipairs(vpnInfo) do
-            local statusColor = v.status == "Connected" and colors.connected or colors.disconnected
-
-            local nameLine = string.format("  %s [%s] - %s", v.name, v.source, vpnStatusText(v.status))
-            table.insert(items, {
-                title = styledtext.new(nameLine, { color = { hex = statusColor }, font = { size = 12 } }),
-                disabled = true
-            })
+            rows[#rows + 1] = {
+                kind = "status",
+                indent = 1,
+                state = v.status == "Connected" and "ok" or "bad",
+                -- The traffic-light dot is drawn by the renderer (a coloured
+                -- emoji in the native fallback, a CSS dot in the panel).
+                text = string.format("%s [%s] - %s", v.name, v.source, vpnStatusText(v.status))
+            }
             if v.interface then
-                table.insert(items, {
-                    title = styledtext.new("    " .. i18n.t("menu_status_vpn_interface") .. ": " .. v.interface, mutedStyle(isDarkMode)),
-                    disabled = true
-                })
+                rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_status_vpn_interface") .. ": " .. v.interface }
             end
             if v.details and v.details.ip4 then
-                table.insert(items, {
-                    title = styledtext.new("    " .. i18n.t("menu_label_ipv4") .. ": " .. v.details.ip4, mutedStyle(isDarkMode)),
-                    disabled = true
-                })
+                -- The IPv4 gateway rides along the IPv4 line: IPv4/gateway: local>>peer
+                local gw4 = v.route and v.route.gateway4 or nil
+                -- Some tunnels (e.g. tun-mode proxies) use the same address for the
+                -- local end and the peer, which carries no extra information.
+                local usable = gw4 and gw4 ~= "" and not gw4:match("^link#") and gw4 ~= v.details.ip4
+                local gw4Text = usable and (">>" .. gw4) or ""
+                local egress4 = (v.status == "Connected" and v.defaultEgress4) and (" (" .. i18n.t("menu_vpn_default_egress") .. ")") or ""
+                rows[#rows + 1] = {
+                    kind = "muted",
+                    indent = 2,
+                    text = i18n.t("menu_label_ipv4_with_gw") .. ": " .. v.details.ip4 .. gw4Text .. egress4
+                }
             end
             if v.details and v.details.ip6 then
-                table.insert(items, {
-                    title = styledtext.new("    " .. i18n.t("menu_label_ipv6") .. ": " .. v.details.ip6, mutedStyle(isDarkMode)),
-                    disabled = true
-                })
+                rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_label_ipv6") .. ": " .. v.details.ip6 }
+            end
+            if v.route then
+                -- Only show the IPv6 gateway when the interface actually has an IPv6 address,
+                -- so the detail block mirrors whatever is listed above it.
+                local gw6 = v.route.gateway6
+                if gw6 and gw6 ~= "" and not gw6:match("^link#") and (v.details and v.details.ip6) then
+                    -- Strip the interface scope (fe80::%utun3 -> fe80::); the interface is already listed above.
+                    local gw6Text = gw6:gsub("%%%w+", "")
+                    local egress6 = (v.status == "Connected" and v.defaultEgress6) and (" (" .. i18n.t("menu_vpn_default_egress") .. ")") or ""
+                    rows[#rows + 1] = {
+                        kind = "muted",
+                        indent = 2,
+                        text = i18n.t("menu_label_gateway") .. " (IPv6): " .. gw6Text .. egress6
+                    }
+                end
             end
         end
     end
 
-    table.insert(items, { title = "-" })
+    rows[#rows + 1] = { kind = "sep" }
+    return rows
+end
+
+-- Native hs.menubar rendering of the row model. Unused while the self-drawn
+-- panel is enabled; kept intact so the native menu stays one flag away.
+local function rowsToMenuItems(rows, colors)
+    local items = {}
+    for _, r in ipairs(rows) do
+        local pad = string.rep("  ", r.indent or 0)
+        if r.kind == "sep" then
+            items[#items + 1] = { title = "-" }
+        elseif r.kind == "head" then
+            items[#items + 1] = {
+                title = styledtext.new(r.text, { color = { hex = colors.sectionHeader }, font = { size = 13 } })
+            }
+        elseif r.kind == "kv" then
+            items[#items + 1] = {
+                title = styledtext.new(pad .. r.label, labelStyle()) .. styledtext.new(" " .. r.value, valueStyle())
+            }
+        elseif r.kind == "label" then
+            items[#items + 1] = { title = styledtext.new(pad .. r.text, labelStyle()) }
+        elseif r.kind == "muted" then
+            items[#items + 1] = { title = styledtext.new(pad .. r.text, mutedStyle()) }
+        elseif r.kind == "status" then
+            local c = (r.state == "ok") and colors.connected or colors.disconnected
+            items[#items + 1] = {
+                title = styledtext.new(pad .. vpnStatusDot(r.state == "ok" and "Connected" or "Disconnected") .. r.text,
+                    { color = { hex = c }, font = { size = 12 } })
+            }
+        end
+    end
     return items
+end
+
+function M.buildNetworkStatusMenuItems(cache)
+    local colors = M.buildColors(cache.isDarkMode or false)
+    return rowsToMenuItems(M.buildStatusRows(cache), colors)
 end
 
 return M

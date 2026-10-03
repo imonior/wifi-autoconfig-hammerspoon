@@ -7,6 +7,24 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.2.0] - 2026-10-03
+
+### 新增
+
+- **自绘状态面板** —— 菜单栏状态视图改为自绘的无边框 WebKit 面板，取代原生 `NSMenu`。此举在浅色与深色模式下固定使用一套深色配色（琥珀色与绿色在 macOS 菜单材质上此前无法看清），并让信息行在悬停时保持静止不变色。若 webview 创建失败会自动回退到原生菜单。
+
+### 变更
+
+- **后台状态轮询** —— 网络快照（Wi-Fi、IP、DNS、VPN）现改为 5 秒后台定时器刷新，而非每次打开菜单时同步收集，因此打开状态菜单是即时的，不再阻塞约 20 个 shell 进程。
+- **更轻量的 VPN 探测** —— 仅当检测到 Clash 系列进程（Clash / FlClash / sing-box / mihomo / Karing）确实在运行时才探测其本地 API，且探测超时从 1 秒降到 0.3 秒。
+
+### 修复
+
+- **导致系统卡死的事件tap** —— 悬停追踪不再安装监听 `mouseMoved` 的 CGEventTap（该 tap 曾让整机指针冻结），改为用定时器轮询 `hs.mouse.getAbsolutePosition()`，不可能冻结指针。
+- **面板生命周期** —— 面板 webview、事件 tap 与定时器会在 Hammerspoon 重载/退出时被销毁，避免反复 Reload Config 累积僵尸窗口。
+- 删除了未使用的 `force_apply_network` URL 处理器（编辑器只使用 `force_apply_network_with_confirm`）。
+- `init.lua` / `i18n.lua` 的版本号已与 `install.sh` 对齐（现为 3.2.0）。
+
 ## [3.1.0] - 2026-09-30
 
 ### 新增

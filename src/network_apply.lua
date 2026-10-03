@@ -10,18 +10,13 @@ local M = {}
 function M.buildNetworkReport(configSource, cachedStatus)
     local status = cachedStatus or core.getCurrentWiFiStatus()
     local ssid = status.ssid or i18n.t("unknown")
-    local rssi = status.rssi or i18n.t("unknown")
     local wifiInterface = core.getWiFiServiceName()
     local wifiDevice = core.getWiFiDevice()
     local ip, gw, nm, v4mode = core.getCurrentIPv4Info(wifiInterface)
     local activeDns = core.getActiveDNS()
     local v6mode, v6ip, v6prefix, v6gw = core.getCurrentIPv6Info(wifiInterface)
 
-    local report = i18n.t("label_ssid") .. ": " .. ssid .. "\n"
-    if rssi and rssi ~= i18n.t("unknown") then
-        report = report .. i18n.t("label_signal") .. ": " .. rssi .. "dBm\n"
-    end
-    report = report ..
+    local report = i18n.t("label_ssid") .. ": " .. ssid .. "\n" ..
         i18n.t("label_config_source") .. ": " .. configSource .. "\n\n" ..
         i18n.t("label_ipv4") .. "\n" ..
         i18n.t("label_mode") .. ": " .. v4mode .. "\n" ..
