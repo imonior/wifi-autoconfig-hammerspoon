@@ -7,6 +7,18 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.2.1] - 2026-10-03
+
+### 修复
+
+- **强制应用现在先校验再动系统** —— 编辑器的「强制应用」此前直接调用 `applyConfigToInterface`，在免密 sudoers 规则下会把编辑器里手输的非法 IP / 子网掩码 / 网关直接下发给 `networksetup`，既无校验也无回滚。强制应用路径现已与保存路径共用同一套 `validateConfig()` 校验，非法输入会被拒绝并弹窗提示。
+- **应用结果弹窗的 IPv6 前缀标签** —— 该弹窗调用了 `i18n.t("label_prefix")`，而这个键在中英两个语言表里都不存在，导致该行显示成裸字符串 `label_prefix: <值>`。现已改用 `menu_label_prefix`，与状态菜单一致。
+- **命令输出不再淹没日志** —— `runWithSudo` 现在把命令输出截断到 2000 字节再写入日志（此前失控的命令可能追加数 MB）。
+
+### 变更
+
+- **免密 sudoers 规则改名并收紧范围** —— 安装器现在写入 `/etc/sudoers.d/hammerspoon_wificonfig`（原为 `hammerspoon_netconfig`，与其他工具可能留下的 `hammerspoon_network` 仅差一两个字符，审计时极易混淆）。规则同时从「放行整个 networksetup 二进制」收窄为只放行本模块实际调用的子命令：`setmanual`、`setdhcp`、`setdnsservers`、`setv6manual`、`setv6automatic`、`setv6off`，以及安装器用于探测的只读命令 `listallnetworkservices`。安装器现在会报告遗留的 `hammerspoon_netconfig` / `hammerspoon_network` 文件，而不是静默跳过。
+
 ## [3.2.0] - 2026-10-03
 
 ### 新增

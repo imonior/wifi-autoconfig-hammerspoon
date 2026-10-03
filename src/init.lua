@@ -16,7 +16,7 @@ local networkApply = require("wifi_autoconfig.network_apply")
 local panel = require("wifi_autoconfig.panel")
 
 local M = {}
-M.VERSION = "3.2.0"
+M.VERSION = "3.2.1"
 
 -- The status list is drawn by panel.lua on its own dark surface. Set this to
 -- false to go back to the native hs.menubar menu: it keeps the system menu
@@ -138,6 +138,17 @@ local function handleForceApply(data)
 
     if not data then
         utils.log(i18n.t("log_force_apply_no_data"))
+        return
+    end
+
+    -- Validate before the confirmation dialog, not after: everything below
+    -- this point runs `sudo /usr/sbin/networksetup` under a NOPASSWD sudoers
+    -- rule, so a malformed IP/netmask/gateway would be pushed straight into
+    -- the live network configuration with no prompt and no rollback.
+    local valid, errMsg = config.validateConfig(data)
+    if not valid then
+        dialog.showAlert(i18n.t("ui_validation_error") .. ": " .. errMsg)
+        utils.log(i18n.t("log_validation_failed", tostring(data.ssid), errMsg))
         return
     end
 

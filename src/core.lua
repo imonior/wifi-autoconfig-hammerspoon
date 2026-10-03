@@ -8,6 +8,22 @@ local M = {}
 local cachedWiFiServiceName = nil
 local cachedWiFiDevice = nil
 
+-- networksetup normally returns instantly, but a wedged helper would leave
+-- io.popen blocked on read("*a") forever. A hard timeout is not available
+-- here: hs.task on this machine exposes only the streaming API
+-- (waitUntilExit() takes no timeout and returns the task object), so wrapping
+-- it would mean turning this into an async call and reworking every caller.
+-- All callers already sit inside waitForCondition timer callbacks, so a stall
+-- delays the apply sequence rather than freezing Hammerspoon. What we CAN
+-- bound is the log: a runaway command must not flood the log file.
+local LOG_OUTPUT_LIMIT = 2000
+
+local function truncateForLog(s)
+    s = tostring(s or "")
+    if #s <= LOG_OUTPUT_LIMIT then return s end
+    return s:sub(1, LOG_OUTPUT_LIMIT) .. "... (" .. #s .. " bytes total)"
+end
+
 local function shellQuote(s)
     return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
 end
@@ -17,22 +33,22 @@ M.shellQuote = shellQuote
 function M.runWithSudo(cmd)
     local fullCmd = string.format("sudo %s", cmd)
     utils.log(i18n.t("log_cmd_exec", fullCmd))
-    
+
     local handle = io.popen(fullCmd .. " 2>&1")
     if not handle then
         utils.log(i18n.t("log_cmd_open_fail"))
         return false, i18n.t("log_cmd_open_fail")
     end
-    
-    local result = handle:read("*a")
+
+    local result = truncateForLog(handle:read("*a"))
     local success, _, exitCode = handle:close()
-    
-    utils.log(i18n.t("log_cmd_output", result or ""))
-    
+
+    utils.log(i18n.t("log_cmd_output", result))
+
     local ok = (exitCode == 0)
     if not ok then
         utils.log(i18n.t("log_cmd_failed", fullCmd))
-        utils.log(i18n.t("log_cmd_error", result or ""))
+        utils.log(i18n.t("log_cmd_error", result))
     end
     return ok, result
 end

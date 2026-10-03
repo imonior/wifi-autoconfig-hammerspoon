@@ -286,7 +286,7 @@ wifi-autoconfig-hammerspoon/
 
 ## 常见问题
 
-**Sudo 提示**：模块使用 `sudo /usr/sbin/networksetup` 修改网络设置。安装时安装器可选择性写入免密 sudoers 规则到 `/etc/sudoers.d/hammerspoon_netconfig`，使网络切换静默执行、不再弹密码框。若跳过该步骤（或本机无此规则），可手动配置：运行 `sudo visudo -f /etc/sudoers.d/hammerspoon_netconfig` 并添加 `<你的用户名> ALL=(ALL) NOPASSWD: /usr/sbin/networksetup`。
+**Sudo 提示**：模块使用 `sudo /usr/sbin/networksetup` 修改网络设置。安装时安装器可选择性写入免密 sudoers 规则到 `/etc/sudoers.d/hammerspoon_wificonfig`，使网络切换静默执行、不再弹密码框。该规则只放行模块实际用到的子命令（`setmanual`、`setdhcp`、`setdnsservers`、`setv6manual`、`setv6automatic`、`setv6off`、`listallnetworkservices`），而不是放行整个二进制。若跳过该步骤（或本机无此规则），可手动配置：运行 `sudo visudo -f /etc/sudoers.d/hammerspoon_wificonfig` 并添加 `<你的用户名> ALL=(root) NOPASSWD: /usr/sbin/networksetup -setmanual *, /usr/sbin/networksetup -setdhcp *, /usr/sbin/networksetup -setdnsservers *, /usr/sbin/networksetup -setv6manual *, /usr/sbin/networksetup -setv6automatic *, /usr/sbin/networksetup -setv6off *, /usr/sbin/networksetup -listallnetworkservices *`（保存前先用 `visudo -cf <文件>` 校验语法）。
 
 **RSSI 显示为 Unknown**：macOS 15+ 需要定位服务权限才能获取 Wi-Fi 信号信息。进入「系统设置 → 隐私与安全性 → 定位服务」→ 启用 Hammerspoon。若不可用，弹窗将隐藏信号行。
 

@@ -7,6 +7,18 @@ All notable changes to **Wi-Fi AutoConfig for Hammerspoon** are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.1] - 2026-10-03
+
+### Fixed
+
+- **Force-apply now validates before touching the system** — the editor's "force apply" action called `applyConfigToInterface` directly, so a malformed IP / netmask / gateway typed into the editor was pushed straight to `sudo networksetup` under the passwordless sudoers rule, with no validation and no rollback. The force-apply path now runs the same `validateConfig()` check as the save path and refuses invalid input with an alert.
+- **IPv6 prefix label in the apply-result popup** — the popup called `i18n.t("label_prefix")`, a key that exists in neither language table, so the line rendered as the bare string `label_prefix: <value>`. It now uses `menu_label_prefix`, matching the status menu.
+- **Command output no longer floods the log** — `runWithSudo` truncates command output at 2000 bytes before writing it to the log (a runaway command could previously append megabytes).
+
+### Changed
+
+- **Passwordless sudoers rule renamed and scoped** — the installer now writes `/etc/sudoers.d/hammerspoon_wificonfig` (was `hammerspoon_netconfig`, only one or two characters away from the `hammerspoon_network` rule other tools may leave behind, which made auditing ambiguous). The rule is also narrowed from granting the whole `networksetup` binary to just the subcommands this module runs: `setmanual`, `setdhcp`, `setdnsservers`, `setv6manual`, `setv6automatic`, `setv6off`, plus the read-only `listallnetworkservices` the installer uses for its detection probe. The installer now reports any legacy `hammerspoon_netconfig` / `hammerspoon_network` file instead of silently skipping.
+
 ## [3.2.0] - 2026-10-03
 
 ### Added

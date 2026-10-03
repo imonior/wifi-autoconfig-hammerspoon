@@ -26,7 +26,7 @@ function M.buildNetworkReport(configSource, cachedStatus)
         i18n.t("label_ipv6") .. "\n" ..
         i18n.t("label_mode") .. ": " .. v6mode .. "\n" ..
         i18n.t("label_address") .. ": " .. v6ip .. "\n" ..
-        (v6prefix ~= "" and (i18n.t("label_prefix") .. ": " .. v6prefix .. "\n") or "") ..
+        (v6prefix ~= "" and (i18n.t("menu_label_prefix") .. ": " .. v6prefix .. "\n") or "") ..
         (v6gw ~= "" and (i18n.t("label_gateway") .. ": " .. v6gw .. "\n") or "") ..
         "\n" ..
         i18n.t("label_dns") .. "\n" ..

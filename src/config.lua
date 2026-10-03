@@ -63,6 +63,11 @@ local function validateConfig(d)
     return true
 end
 
+-- Exported so the force-apply path can validate too. Previously this was
+-- local and only ran on the save path, which meant a hand-typed bad value in
+-- the editor went straight to `sudo networksetup` with no check at all.
+M.validateConfig = validateConfig
+
 function M.read()
     local f = io.open(M.path, "r")
     if f then

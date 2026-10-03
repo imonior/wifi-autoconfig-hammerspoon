@@ -1,7 +1,7 @@
 -- ~/.hammerspoon/wifi_autoconfig/i18n.lua
 local M = {}
 
-M.VERSION = "3.2.0"
+M.VERSION = "3.2.1"
 
 local locales = {
     zh = {
