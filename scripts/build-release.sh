@@ -27,6 +27,54 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
+# ---- Check the version against the tag this build is for -------------------
+# The archive name, release.html, RELEASE.md and the GitHub Release are all derived
+# from VERSION, while the tag a user installs from is a separate fact. When the two
+# disagree the bundle says one version and the release says another, and nobody can
+# tell which code a machine actually got - so this build refuses to produce that.
+#
+# CI runs this script on a tag push with HEAD at the tag, so an exact match works even
+# in a shallow clone. Locally, the usual order is "bump, commit, tag", so the nearest
+# tag is the right thing to compare against.
+if ! command -v git >/dev/null 2>&1; then
+    echo "ERROR: git is required to check MODULE_VERSION against the release tag." >&2
+    exit 1
+fi
+
+TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+if [ -z "$TAG" ]; then
+    TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+fi
+if [ -z "$TAG" ]; then
+    echo "ERROR: no git tag found, so this build cannot be tied to a release version." >&2
+    echo "       Tag the commit first, e.g.:  git tag v${VERSION} && git push origin v${VERSION}" >&2
+    exit 1
+fi
+
+# Older tags were written V1.0 / V2.0, so the prefix is matched either way.
+TAG_VERSION="$(printf '%s' "$TAG" | sed 's/^[vV]//')"
+if [ "$TAG_VERSION" != "$VERSION" ]; then
+    echo "ERROR: version mismatch - the tag is '$TAG' (v${TAG_VERSION}) but" >&2
+    echo "       scripts/install.sh says MODULE_VERSION=\"${VERSION}\"." >&2
+    echo "       The bundle would be named v${VERSION} while the release is tagged ${TAG}." >&2
+    echo "       Fix one of them: bump MODULE_VERSION for a new release, or push the tag" >&2
+    echo "       that matches the code: git tag v${VERSION}" >&2
+    exit 1
+fi
+
+# A tag build and a working-tree build are not the same artifact. If HEAD has moved on
+# from the tag, what is packaged here is not what the tag points at.
+TAG_COMMIT="$(git rev-list -n1 "$TAG" 2>/dev/null || true)"
+HEAD_COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$TAG_COMMIT" ] && [ -n "$HEAD_COMMIT" ] && [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+    echo "WARNING: HEAD ($(printf '%.7s' "$HEAD_COMMIT")) is not the tagged commit" \
+         "$TAG ($(printf '%.7s' "$TAG_COMMIT"))." >&2
+    echo "WARNING: this archive is built from the working tree, not from what the tag" >&2
+    echo "         points at. Check out the tag for a release build: git checkout $TAG" >&2
+fi
+
+echo "Version $VERSION matches tag $TAG."
+
 PKG_NAME="wifi-autoconfig-hammerspoon"
 PKG_DIR="$PKG_NAME"
 DIST_DIR="$PROJECT_ROOT/dist"
@@ -269,3 +317,14 @@ echo "Release v$VERSION built successfully."
 echo "  Archive : $ZIP"
 echo "  Page    : $RELEASE_HTML"
 echo "  Notes   : $RELEASE_MD"
+
+# release.html and RELEASE.md are tracked in the repository and rewritten on every
+# build. When the committed copies are not the ones just generated, the repository
+# keeps describing the PREVIOUS release while the tag points here - so say it out loud
+# rather than leaving a silently stale file, and leave the committing to the maintainer.
+if ! git diff --quiet -- release.html RELEASE.md 2>/dev/null; then
+    echo ""
+    echo "NOTE: the generated release.html / RELEASE.md differ from the committed copies."
+    echo "      Commit them, or the repository keeps describing the previous release:"
+    echo "        git add release.html RELEASE.md"
+fi

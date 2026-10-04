@@ -5,8 +5,29 @@ local i18n = require("wifi_autoconfig.i18n")
 
 local M = {}
 
+-- The Wi-Fi service name and the hardware port device are stable most of the
+-- time, so they are cached to keep them off the hot path. But they are NOT
+-- permanent: macOS renames a service when you rename it in Network Settings
+-- ("Wi-Fi" -> "Wi-Fi (2)" happens routinely), and plugging in an external Wi-Fi
+-- dongle moves the interface from en0 to something else. Serving a stale value
+-- here means writing an IP/DNS configuration to the WRONG service, so both
+-- entries expire and can be dropped on demand.
+local NETINFO_CACHE_TTL = 300
+
 local cachedWiFiServiceName = nil
+local cachedWiFiServiceTime = 0
 local cachedWiFiDevice = nil
+local cachedWiFiDeviceTime = 0
+
+-- Drop both caches. init.lua calls this whenever the network state changes so a
+-- renamed service or a new interface is picked up immediately instead of after
+-- the TTL.
+function M.invalidateInterfaceCache()
+    cachedWiFiServiceName = nil
+    cachedWiFiServiceTime = 0
+    cachedWiFiDevice = nil
+    cachedWiFiDeviceTime = 0
+end
 
 -- networksetup normally returns instantly, but a wedged helper would leave
 -- io.popen blocked on read("*a") forever. A hard timeout is not available
@@ -53,35 +74,67 @@ function M.runWithSudo(cmd)
     return ok, result
 end
 
+-- Resolve the Wi-Fi service name. Two passes on purpose:
+--   1. exact match, so a second service that merely contains "Wi-Fi"
+--      (e.g. "Wi-Fi Backup") can never be picked up by accident;
+--   2. substring fallback, so a service the user renamed in Network Settings
+--      (macOS appends " (2)" to duplicates) is still found rather than
+--      silently falling back to the hardcoded "Wi-Fi" that no longer exists.
+local function matchWiFiServiceLine(line)
+    if line:match("^%s*Wi%-Fi%s*$") or line:match("^%s*无线网络%s*$") then
+        return line:match("^%s*(.-)%s*$")
+    end
+    return nil
+end
+
 function M.getWiFiServiceName()
-    if cachedWiFiServiceName then return cachedWiFiServiceName end
+    if cachedWiFiServiceName and (os.time() - cachedWiFiServiceTime) < NETINFO_CACHE_TTL then
+        return cachedWiFiServiceName
+    end
     local handle = io.popen('/usr/sbin/networksetup -listallnetworkservices')
     if not handle then return "Wi-Fi" end
     local result = handle:read("*a")
     handle:close()
+
+    local loose = nil
     for line in result:gmatch("[^\r\n]+") do
-        if line:match("Wi%-Fi") or line:match("无线网络") then 
-            cachedWiFiServiceName = line
-            return line 
+        if line:match("^%s*%*") then
+            -- Disabled services are prefixed with an asterisk; skip them.
+        else
+            local exact = matchWiFiServiceLine(line)
+            if exact then
+                cachedWiFiServiceName = exact
+                cachedWiFiServiceTime = os.time()
+                return cachedWiFiServiceName
+            end
+            if not loose and (line:match("Wi%-Fi") or line:match("无线网络")) then
+                loose = line:match("^%s*(.-)%s*$")
+            end
         end
     end
-    cachedWiFiServiceName = "Wi-Fi"
-    return "Wi-Fi"
+
+    cachedWiFiServiceName = loose or "Wi-Fi"
+    cachedWiFiServiceTime = os.time()
+    return cachedWiFiServiceName
 end
 
 function M.getWiFiDevice()
-    if cachedWiFiDevice then return cachedWiFiDevice end
+    if cachedWiFiDevice and (os.time() - cachedWiFiDeviceTime) < NETINFO_CACHE_TTL then
+        return cachedWiFiDevice
+    end
     local handle = io.popen("/usr/sbin/networksetup -listallhardwareports")
     if not handle then return "en0" end
     local result = handle:read("*a")
     handle:close()
     for port, dev in result:gmatch("Hardware Port:%s*([^\n]+)%s*\nDevice:%s*([^\n]+)") do
-        if port and port:match("Wi%-Fi") then 
+        if port and port:match("Wi%-Fi") then
             cachedWiFiDevice = dev:match("^%s*(.-)%s*$")
-            return cachedWiFiDevice 
+            cachedWiFiDeviceTime = os.time()
+            return cachedWiFiDevice
         end
     end
     cachedWiFiDevice = "en0"
+    cachedWiFiDeviceTime = os.time()
     return "en0"
 end
 
@@ -124,8 +177,7 @@ function M.getCurrentWiFiStatus()
         status.connected = true
         status.ssid = wifiSSID
     else
-        local interface = M.getWiFiDevice() or "en0"
-        local cmd = "/usr/sbin/networksetup -getairportnetwork " .. shellQuote(interface)
+        local cmd = "/usr/sbin/networksetup -getairportnetwork " .. shellQuote(wifiDevice)
         
         local handle = io.popen(cmd)
         if handle then
@@ -142,35 +194,46 @@ function M.getCurrentWiFiStatus()
             end
         end
     end
-    
-    if status.connected and status.ssid then
-        local details = wifi.interfaceDetails()
-        if details and details.ssid and not status.ssid then
-            status.ssid = details.ssid
-        end
-    end
 
     return status
 end
 
-function M.getCurrentIPv4Info(wifiInterface)
+-- `networksetup -getinfo` prints IPv4 and IPv6 in the SAME output, so one call can
+-- report both families. M.getServiceInfo() returns that raw output (or nil) and the
+-- parsers below are pure - they never shell out. Anything that needs both families
+-- (the status report, the menu poller, the editor sync) must call
+-- M.getCurrentIPInfo() rather than the single-family helpers, or it pays for the
+-- same process twice.
+function M.getServiceInfo(wifiInterface)
     local handle = io.popen("/usr/sbin/networksetup -getinfo " .. shellQuote(wifiInterface))
-    if not handle then return "", "", "", "" end
+    if not handle then return nil end
     local result = handle:read("*a")
     handle:close()
+    return result
+end
 
+-- Returns: ip, gateway, netmask, mode
+function M.parseIPv4Info(result)
+    if not result then return "", "", "", "" end
     local v4mode = i18n.t("v4_dhcp")
     if result:match("Manual Configuration") then v4mode = i18n.t("v4_manual") end
 
-    return result:match("IP address:%s*([%d%.]+)") or "", result:match("Router:%s*([%d%.]+)") or "", result:match("Subnet mask:%s*([%d%.]+)") or "", v4mode
+    return result:match("IP address:%s*([%d%.]+)") or "",
+           result:match("Router:%s*([%d%.]+)") or "",
+           result:match("Subnet mask:%s*([%d%.]+)") or "",
+           v4mode
 end
 
--- 【新增】解析 IPv6 生效状态与实际分配到的全球单播地址
-function M.getCurrentIPv6Info(wifiInterface)
-    local handle = io.popen("/usr/sbin/networksetup -getinfo " .. shellQuote(wifiInterface))
-    if not handle then return i18n.t("v6_off"), i18n.t("unassigned"), "", "" end
-    local result = handle:read("*a")
-    handle:close()
+function M.getCurrentIPv4Info(wifiInterface)
+    return M.parseIPv4Info(M.getServiceInfo(wifiInterface))
+end
+
+-- Parses the active IPv6 status and the global unicast address actually assigned.
+-- `result` is the raw output of M.getServiceInfo(); it is parsed in place, with
+-- an ifconfig fallback applied only when IPv6 is on but no address was reported.
+-- Returns: mode, ip, prefix, router
+function M.parseIPv6Info(result)
+    if not result then return i18n.t("v6_off"), i18n.t("unassigned"), "", "" end
 
     local v6mode = i18n.t("v6_off")
     if result:match("IPv6:.*Automatic") then v6mode = i18n.t("v6_automatic")
@@ -186,7 +249,7 @@ function M.getCurrentIPv6Info(wifiInterface)
     -- Only try ifconfig fallback if IPv6 is not Off
     if v6mode ~= i18n.t("v6_off") and v6ip == i18n.t("unassigned") then
         local dev = M.getWiFiDevice()
-        local ih = io.popen(string.format("ifconfig %s", dev))
+        local ih = io.popen("ifconfig " .. shellQuote(dev))
         if ih then
             local iconf = ih:read("*a")
             ih:close()
@@ -199,12 +262,19 @@ function M.getCurrentIPv6Info(wifiInterface)
             end
         end
     end
-    
+
     -- If IPv6 is Off, show "Off" not "unassigned"
     if v6mode == i18n.t("v6_off") then
         v6ip = i18n.t("v6_off")
     end
     return v6mode, v6ip, v6prefix, v6router
+end
+
+function M.getCurrentIPInfo(wifiInterface)
+    local info = M.getServiceInfo(wifiInterface)
+    local ip, gw, nm, v4mode = M.parseIPv4Info(info)
+    local v6mode, v6ip, v6prefix, v6router = M.parseIPv6Info(info)
+    return ip, gw, nm, v4mode, v6mode, v6ip, v6prefix, v6router
 end
 
 function M.getActiveDNS()
@@ -232,7 +302,7 @@ function M.getActiveDNS()
             rf:close()
         end
     end
-    return #dnsList > 0 and table.concat(dnsList, ", ") or i18n.t("system_auto")
+    return #dnsList > 0 and table.concat(dnsList, ", ") or i18n.t("dns_empty")
 end
 
 function M.setDNSServers(wifiInterface, dns)
@@ -451,6 +521,17 @@ local function getListeningProcessMap()
     return map
 end
 
+-- In a Lua pattern '-' is not a literal character, it is the lazy quantifier applied
+-- to the item BEFORE it. "sing-box" thus means "sin", then as few "g" as possible,
+-- then "box" - the hyphen is never matched, and the whole thing fails against the
+-- text "sing-box" (verified: it returns nil, while "sing%-box" matches). Process
+-- names are escaped before being used as patterns for exactly this reason, so an app
+-- whose name contains '-' cannot silently stop being detected.
+local function hasProcess(processList, name)
+    if not processList or not name then return false end
+    return processList:match((name:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))) ~= nil
+end
+
 local function determineClashAppName(processList, listeningMap, apiPort)
     local listener = listeningMap[apiPort]
     if listener then
@@ -461,9 +542,9 @@ local function determineClashAppName(processList, listeningMap, apiPort)
     end
 
     if processList then
-        if processList:match("FlClash") then return "FlClash" end
-        if processList:match("[Kk]aring") then return "Karing" end
-        if processList:match("sing-box") then return "sing-box" end
+        if hasProcess(processList, "FlClash") then return "FlClash" end
+        if hasProcess(processList, "Karing") or hasProcess(processList, "karing") then return "Karing" end
+        if hasProcess(processList, "sing-box") then return "sing-box" end
     end
 
     return "Clash"
@@ -474,9 +555,10 @@ local function getClashAppInfos(processList, listeningMap)
     -- actually running: otherwise the 4 sequential curls just hit
     -- connection-refused and waste a full status refresh. This is the single
     -- heaviest part of getVPNInfo (it now also runs on a background timer).
-    if not processList or not (processList:match("Clash") or processList:match("FlClash")
-            or processList:match("FlClashCore") or processList:match("[Kk]aring")
-            or processList:match("sing%-box") or processList:match("mihomo")) then
+    if not processList or not (hasProcess(processList, "Clash") or hasProcess(processList, "FlClash")
+            or hasProcess(processList, "FlClashCore") or hasProcess(processList, "Karing")
+            or hasProcess(processList, "karing") or hasProcess(processList, "sing-box")
+            or hasProcess(processList, "mihomo")) then
         return {}
     end
 
@@ -596,7 +678,7 @@ local knownProxyApps = {
 
 local function getHiddifyConnectionStatus()
     local logPath = os.getenv("HOME") .. "/Library/Application Support/app.hiddify.com/app.log"
-    local handle = io.popen("tail -30 '" .. logPath .. "' 2>/dev/null")
+    local handle = io.popen("tail -30 " .. shellQuote(logPath) .. " 2>/dev/null")
     if not handle then return nil end
     local result = handle:read("*a")
     handle:close()
@@ -620,7 +702,7 @@ local function getProxyVPNs(processList, existingVPNs, clashAppInfos, listeningM
         detectedApps[v.name] = true
     end
 
-    if not detectedApps["Hiddify"] and processList and processList:match("Hiddify") then
+    if not detectedApps["Hiddify"] and hasProcess(processList, "Hiddify") then
         local hiddifyStatus = getHiddifyConnectionStatus()
         if hiddifyStatus == "CONNECTED" then
             table.insert(proxyVPNs, {
@@ -649,18 +731,33 @@ local function getProxyVPNs(processList, existingVPNs, clashAppInfos, listeningM
         end
     end
 
+    -- System-proxy lookup: read the enabled proxy port, then map it back to a
+    -- process via listeningMap. That mapping can only ever name one of
+    -- knownProxyApps, so if none of them is running there is nothing to find -
+    -- skip the three networksetup calls entirely instead of asking the system
+    -- about proxies on a machine that runs none.
     local proxyPort = nil
-    local proxyTypes = { "getwebproxy", "getsecurewebproxy", "getsocksfirewallproxy" }
-    for _, cmd in ipairs(proxyTypes) do
-        local h = io.popen("/usr/sbin/networksetup -" .. cmd .. " " .. shellQuote(wifiService) .. " 2>/dev/null")
-        if h then
-            local result = h:read("*a")
-            h:close()
-            if result:match("Enabled: Yes") then
-                local port = result:match("Port:%s*(%d+)")
-                if port and port ~= "0" then
-                    proxyPort = port
-                    break
+    local anyKnownProxyRunning = false
+    for _, app in ipairs(knownProxyApps) do
+        if hasProcess(processList, app.process) then
+            anyKnownProxyRunning = true
+            break
+        end
+    end
+
+    if anyKnownProxyRunning then
+        local proxyTypes = { "getwebproxy", "getsecurewebproxy", "getsocksfirewallproxy" }
+        for _, cmd in ipairs(proxyTypes) do
+            local h = io.popen("/usr/sbin/networksetup -" .. cmd .. " " .. shellQuote(wifiService) .. " 2>/dev/null")
+            if h then
+                local result = h:read("*a")
+                h:close()
+                if result:match("Enabled: Yes") then
+                    local port = result:match("Port:%s*(%d+)")
+                    if port and port ~= "0" then
+                        proxyPort = port
+                        break
+                    end
                 end
             end
         end
@@ -831,14 +928,52 @@ function M.getVPNInfo()
     return vpnInfo
 end
 
+-- Returns one of four statuses, so the apply flow can report what actually happened
+-- to IPv6 rather than showing a blanket success popup:
+--   "applied"   - the command ran,
+--   "failed"    - the command was refused or errored (output carries the reason),
+--   "skipped"   - this policy says nothing about IPv6, so the interface keeps its
+--                 current setting, which is a normal outcome and not a problem,
+--   "incomplete"- a manual IPv6 policy without all three arguments,
+--   "unknown"   - a v6mode value that means nothing (a typo, or a field from a future
+--                 version) - also not applied, but the user has to hear about it,
+--                 because the policy they wrote is not what is running.
+--
+-- Previously anything that was not manual-with-full-arguments landed in the final
+-- else and ran -setv6off. A policy saved before the v6mode field existed, or
+-- hand-edited without it, therefore turned IPv6 off on every single network switch -
+-- and did so silently, while the "no matching policy" branch of applyNetworkStrategy
+-- does not touch IPv6 at all. Only an explicit "off" may disable it now.
 function M.configureIPv6(wifiInterface, v6mode, ipv6, prefix, gateway)
-    if v6mode == "manual" and ipv6 and prefix and gateway then
-        M.runWithSudo("/usr/sbin/networksetup -setv6manual " .. shellQuote(wifiInterface) .. " " .. shellQuote(ipv6) .. " " .. shellQuote(prefix) .. " " .. shellQuote(gateway))
-    elseif v6mode == "automatic" then
-        M.runWithSudo("/usr/sbin/networksetup -setv6automatic " .. shellQuote(wifiInterface))
-    else
-        M.runWithSudo("/usr/sbin/networksetup -setv6off " .. shellQuote(wifiInterface))
+    if v6mode == "automatic" then
+        local ok, output = M.runWithSudo("/usr/sbin/networksetup -setv6automatic " .. shellQuote(wifiInterface))
+        return ok and "applied" or "failed", output
     end
+
+    if v6mode == "off" then
+        local ok, output = M.runWithSudo("/usr/sbin/networksetup -setv6off " .. shellQuote(wifiInterface))
+        return ok and "applied" or "failed", output
+    end
+
+    if v6mode == "manual" then
+        if not ipv6 or ipv6 == "" or not prefix or prefix == "" or not gateway or gateway == "" then
+            -- The editor only sends all three fields together, so this is a
+            -- hand-edited or truncated policy. Applying it half-way would leave a
+            -- broken IPv6 address on the interface, which is worse than not trying.
+            utils.log(i18n.t("log_v6_manual_incomplete", tostring(wifiInterface)))
+            return "incomplete"
+        end
+        local ok, output = M.runWithSudo("/usr/sbin/networksetup -setv6manual " .. shellQuote(wifiInterface) .. " " .. shellQuote(ipv6) .. " " .. shellQuote(prefix) .. " " .. shellQuote(gateway))
+        return ok and "applied" or "failed", output
+    end
+
+    -- No v6mode field at all: leave the interface alone.
+    if v6mode == nil or v6mode == "" then
+        return "skipped"
+    end
+
+    utils.log(i18n.t("log_v6_mode_unknown", tostring(v6mode), tostring(wifiInterface)))
+    return "unknown"
 end
 
 return M

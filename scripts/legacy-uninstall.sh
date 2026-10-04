@@ -61,13 +61,39 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
 step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
+# Is a terminal actually attached? /dev/tty keeps existing as a character device when
+# nothing is behind it, and `-c /dev/tty` still says yes, so the only honest test is to
+# open it. A failed redirect is reported by the shell to its own stderr, which a
+# command-level 2>/dev/null cannot hide - hence the subshell.
+has_tty() {
+    ( exec </dev/tty ) 2>/dev/null
+}
+
+# Ask a question even when the script arrived over a pipe (curl | bash), where stdin is
+# the script body: a bare `read` there consumes the next command line as the answer and
+# bash carries on after it, silently skipping steps - in this script those steps delete
+# directories. Returns 0 when the user was actually asked, 1 when there is nobody to ask.
+ask_line() {
+    local prompt="$1"
+    REPLY=""
+    if [ -t 0 ]; then
+        read -r -p "$prompt" REPLY || true
+        return 0
+    elif has_tty && read -r -p "$prompt" REPLY </dev/tty 2>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 show_help() {
     cat <<'EOF'
 legacy-uninstall.sh - Fully remove a pre-1.0 installation
 
 This script removes an OLDER release of this project
 (~/.hammerspoon/wifi_ip_switcher or ~/.hammerspoon/wifi_ip_controller),
-backs your config.json up to the Desktop, and cleans the init.lua reference.
+backs your config.json up to ~/.wifi_autoconfig_backups/ (override with
+BACKUP_DIR), and cleans the init.lua reference.
 
 Usage:
   bash legacy-uninstall.sh            Interactive
@@ -128,11 +154,40 @@ purge_legacy_require() {
         return 0
     fi
 
+    # Only the lines this project actually wrote: an anchored require of one of the
+    # legacy module names (bare, or assigned to a variable), or a comment line that is
+    # nothing but the old display name. The detection above stays loose on purpose, but
+    # a loose match must never become a deletion - the previous `grep -viE` here removed
+    # ANY line merely mentioning the old names, case-insensitively, including unrelated
+    # tools (a "VPN IP Switcher" require, a note in a longer comment).
+    local delete_pattern='^[[:space:]]*((local[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*([[:space:]]*,[[:space:]]*[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]*=[[:space:]]*)?require[^[:alnum:]_]*["'\'']?wifi_ip_(switcher|controller)|^[[:space:]]*--+[[:space:]]*(Wi-Fi|WiFi) IP Switcher[[:space:]]*$'
+
+    if ! grep -qE "$delete_pattern" "$HAMMERSPOON_INIT" 2>/dev/null; then
+        warn "A line mentions the legacy module, but none looks like the require line"
+        warn "this project wrote, so init.lua is left untouched."
+        warn "Remove it by hand if it is yours to remove: $HAMMERSPOON_INIT"
+        return 0
+    fi
+
     step "Removing legacy reference from ~/.hammerspoon/init.lua..."
-    local tmp_file
-    tmp_file=$(mktemp)
-    grep -viE "$LEGACY_LINE_PATTERN" "$HAMMERSPOON_INIT" > "$tmp_file" 2>/dev/null || true
-    mv "$tmp_file" "$HAMMERSPOON_INIT"
+    echo "The following lines will be removed:"
+    grep -nE "$delete_pattern" "$HAMMERSPOON_INIT" 2>/dev/null | while IFS= read -r line; do
+        echo "    | $line"
+    done
+
+    mkdir -p "$BACKUP_DIR"
+    cp "$HAMMERSPOON_INIT" "$BACKUP_DIR/init.lua.before-legacy-uninstall"
+    info "init.lua backed up to: $BACKUP_DIR/init.lua.before-legacy-uninstall"
+
+    # Built beside the target and renamed over it: mktemp's file in /tmp is mode 0600,
+    # and moving that onto init.lua would quietly change its permissions.
+    local tmp_file="$HAMMERSPOON_INIT.legacy.tmp.$$"
+    if ! cp -p "$HAMMERSPOON_INIT" "$tmp_file" 2>/dev/null; then
+        error "Could not create a temporary copy beside $HAMMERSPOON_INIT; init.lua left untouched."
+        return 0
+    fi
+    grep -vE "$delete_pattern" "$HAMMERSPOON_INIT" > "$tmp_file" 2>/dev/null || true
+    mv -f "$tmp_file" "$HAMMERSPOON_INIT"
     info "Removed legacy reference from init.lua."
 }
 
@@ -179,7 +234,7 @@ main() {
 
     local has_legacy=false
     for dir in "${LEGACY_DIRS[@]}"; do
-        [ -d "$dir" ] && has_legacy=true
+        if [ -d "$dir" ]; then has_legacy=true; fi
     done
     if grep -qiE "$LEGACY_LINE_PATTERN" "$HAMMERSPOON_INIT" 2>/dev/null; then
         has_legacy=true
@@ -192,12 +247,17 @@ main() {
 
     if [ "$force" != true ]; then
         echo "This will completely remove the OLD module directory and its init.lua"
-        echo "reference. Your old config.json will be backed up to the Desktop first."
+        echo "reference. Your old config.json will be backed up to ~/.wifi_autoconfig_backups/ first."
         echo ""
-        read -p "Confirm uninstall of the legacy version? (y/N) " -r || true
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            info "Aborted."
-            exit 0
+        if ask_line "Confirm uninstall of the legacy version? (y/N) "; then
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                info "Aborted."
+                exit 0
+            fi
+        else
+            error "Not removing anything: there was no terminal to confirm on."
+            error "Run this from a terminal, or pass --force to skip the prompts."
+            exit 1
         fi
     fi
 

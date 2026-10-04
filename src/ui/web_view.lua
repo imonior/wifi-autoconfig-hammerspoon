@@ -59,8 +59,12 @@ function M.showEditor(configData)
     end
     
     local preferredNetworks = core.getPreferredNetworks()
-    local networksJson = json.encode(preferredNetworks)
-    local configJson = json.encode(configData)
+    -- hs.json.encode returns nil instead of raising when a value cannot be encoded, and
+    -- both strings below are spliced straight into the page (`let x = <json>;`). A nil
+    -- here used to reach escapeForInlineScript() and raise, so opening the editor did
+    -- nothing at all; an empty array/object is what the page expects for "no data".
+    local networksJson = json.encode(preferredNetworks) or "[]"
+    local configJson = json.encode(configData) or "{}"
     
     local html = loadTemplate("editor.html")
     if not html then return end
@@ -125,8 +129,10 @@ function M.refreshEditor()
     config.read()
     
     local preferredNetworks = core.getPreferredNetworks()
-    local networksJson = json.encode(preferredNetworks)
-    local configJson = json.encode(config.current)
+    -- Same as showEditor: an unencodable value must not reach refreshConfig(), whose
+    -- JSON.parse('') would throw and leave the editor showing a stale list.
+    local networksJson = json.encode(preferredNetworks) or "[]"
+    local configJson = json.encode(config.current) or "{}"
     
     local configCount = 0
     for k,v in pairs(config.current) do configCount = configCount + 1 end
@@ -159,9 +165,9 @@ function M.syncHardwareStatusToUI()
     
     local status = core.getCurrentWiFiStatus()
     local wifiInterface = core.getWiFiServiceName()
-    local ip, gw, nm, v4mode = core.getCurrentIPv4Info(wifiInterface)
+    -- Both address families come from one -getinfo call.
+    local ip, gw, nm, v4mode, v6mode, v6ip = core.getCurrentIPInfo(wifiInterface)
     local dns = core.getActiveDNS()
-    local v6mode, v6ip = core.getCurrentIPv6Info(wifiInterface)
     
     syncLogCount = syncLogCount + 1
     if syncLogCount % 5 == 0 then

@@ -3,8 +3,13 @@ local M = {}
 M.modulePath = debug.getinfo(1).source:match("@?(.*/)") or (os.getenv("HOME") .. "/.hammerspoon/wifi_autoconfig/")
 local modulePath = M.modulePath
 local logFile = modulePath .. "wifi_autoconfig.log"
-local lastCleanupTime = os.time()
+-- 0 (not os.time()) so the very first log after a fresh load runs a cleanup
+-- pass. That pass reads a file that is at most one session old, so it is cheap,
+-- and it means a machine that never writes much still trims its log instead of
+-- waiting a full week for the first trigger.
+local lastCleanupTime = 0
 local timer = require("hs.timer")
+local dialog = require("hs.dialog")
 local i18n = require("wifi_autoconfig.i18n")
 
 function M.escapeHTML(str)
@@ -27,39 +32,77 @@ local function cleanupInterval()
     return 7 * 24 * 3600
 end
 
+-- Hard cap on the log file. Entries older than the retention window are
+-- dropped, and if that is not enough (a burst of logging, or a very long
+-- uptime) the newest MAX_LOG_LINES are kept and the rest discarded. Without
+-- this the file is only ever appended to, so it grows without bound.
+local MAX_LOG_LINES = 20000
+
 function M.cleanOldLogs()
     local f = io.open(logFile, "r")
     if not f then return end
     local now = os.time()
-    local lines = {}
+
+    -- A log line may span several physical lines (a multi-line command output
+    -- is written as several records), so a line without a timestamp belongs to
+    -- the entry above it. lastEntryWithinRange tracks that entry's verdict.
+    local kept = {}
+    local keptCount = 0
     local lastEntryWithinRange = false
+    -- Distinguishes "no timestamped entry seen yet" from "the last entry was
+    -- dropped". Without it, a log file that starts with an orphan continuation
+    -- line (or a truncated first record) would have that line silently deleted
+    -- just because there was nothing above it to inherit a verdict from.
+    local seenEntry = false
+
     for line in f:lines() do
+        local keep = true
         local dateStr = line:match("%[(%d+%-%d+%-%d+ %d+:%d+:%d+)%]")
         if dateStr then
-            local year, month, day, hour, min, sec = dateStr:match("(%d+)%-(%d+)%-(%d+) (%d+):(%d+):(%d+)")
-            local y, m, d, h, mi, s = tonumber(year), tonumber(month), tonumber(day), tonumber(hour), tonumber(min), tonumber(sec)
-            if y and m and d and h and mi and s then
-                local t = os.time{year=y, month=m, day=d, hour=h, min=mi, sec=s}
-                if now - t <= cleanupInterval() then
-                    table.insert(lines, line)
-                    lastEntryWithinRange = true
-                else
-                    lastEntryWithinRange = false
-                end
+            seenEntry = true
+            local y, m, d, h, mi, s = dateStr:match("(%d+)%-(%d+)%-(%d+) (%d+):(%d+):(%d+)")
+            local yy, mm, dd, hh, mii, ss = tonumber(y), tonumber(m), tonumber(d), tonumber(h), tonumber(mi), tonumber(s)
+            if yy and mm and dd and hh and mii and ss then
+                local t = os.time{year=yy, month=mm, day=dd, hour=hh, min=mii, sec=ss}
+                lastEntryWithinRange = (now - t <= cleanupInterval())
             else
-                table.insert(lines, line)
+                -- Unparseable timestamp: keep it rather than discarding data.
                 lastEntryWithinRange = true
             end
-        else
-            if lastEntryWithinRange then
-                table.insert(lines, line)
-            end
+            keep = lastEntryWithinRange
+        elseif seenEntry then
+            -- No timestamp of its own: this line is a continuation, so it lives
+            -- or dies with the entry above it. Lines before the first timestamp
+            -- (a truncated head) are kept - we cannot prove they are stale.
+            keep = lastEntryWithinRange
+        end
+
+        if keep then
+            keptCount = keptCount + 1
+            kept[keptCount] = line
         end
     end
     f:close()
+
+    -- Enforce the size cap by keeping only the tail.
+    if keptCount > MAX_LOG_LINES then
+        local overflow = keptCount - MAX_LOG_LINES
+        local trimmed = {}
+        for i = overflow + 1, keptCount do
+            trimmed[i - overflow] = kept[i]
+        end
+        kept = trimmed
+        keptCount = MAX_LOG_LINES
+        M.log(("log truncated: dropped %d oldest lines (cap %d)"):format(overflow, MAX_LOG_LINES))
+    end
+
     local wf = io.open(logFile, "w")
     if wf then
-        wf:write(table.concat(lines, "\n") .. "\n")
+        -- table.concat on an empty table yields "", and appending "\n" would
+        -- leave a blank line behind, so only terminate when there is content.
+        if keptCount > 0 then
+            wf:write(table.concat(kept, "\n") .. "\n")
+        end
         wf:close()
     end
 end
@@ -67,8 +110,11 @@ end
 function M.log(message)
     local now = os.time()
     if now - lastCleanupTime >= cleanupInterval() then
-        M.cleanOldLogs()
+        -- Stamp BEFORE cleaning: cleanOldLogs() itself calls M.log() when it
+        -- trims, and updating afterwards would let that nested call see a stale
+        -- timestamp and start the whole cycle over (infinite recursion).
         lastCleanupTime = now
+        M.cleanOldLogs()
     end
     if message == nil then message = "<nil>" end
     local f = io.open(logFile, "a")
@@ -76,6 +122,30 @@ function M.log(message)
         f:write(os.date("[%Y-%m-%d %H:%M:%S] ") .. tostring(message) .. "\n")
         f:close()
     end
+end
+
+-- hs.dialog.blockAlert runs a nested modal loop and blocks this thread until the user
+-- answers. Several paths can reach it while a dialog is already up (a URL event from the
+-- editor, a timer, another Wi-Fi switch), and a second modal on top of the first leaves
+-- Hammerspoon with a window no button can dismiss. One answer at a time: a caller whose
+-- dialog was skipped gets nil, which every caller already treats as "not confirmed".
+local modalOpen = false
+
+function M.blockAlertOnce(title, message, button1, button2)
+    if modalOpen then
+        M.log(i18n.t("log_modal_blocked", tostring(title)))
+        return nil
+    end
+    modalOpen = true
+    local ok, choice = pcall(function()
+        return dialog.blockAlert(title, message, button1, button2)
+    end)
+    modalOpen = false
+    if not ok then
+        M.log(i18n.t("log_modal_error", tostring(choice)))
+        return nil
+    end
+    return choice
 end
 
 function M.wait(seconds, callback)
@@ -135,62 +205,6 @@ function M.waitForCondition(checkFn, timeout, interval, callback)
 
     if not done then
         t = timer.new(pollInterval, check)
-        t:start()
-    end
-end
-
-function M.executeWithRetry(cmdFn, checkFn, maxRetries, delay, callback)
-    if not cmdFn or type(cmdFn) ~= "function" then
-        M.log(i18n.t("log_retry_cmd_invalid"))
-        if callback then callback(false) end
-        return
-    end
-
-    if not callback or type(callback) ~= "function" then
-        M.log(i18n.t("log_retry_cb_invalid"))
-        return
-    end
-
-    local retries = 0
-    local maxAttempts = maxRetries or 3
-    local waitDelay = delay or 1
-    local t = nil
-    local done = false
-
-    local function execute()
-        if done then return end
-
-        if not cmdFn or not callback then
-            done = true
-            if t then t:stop() end
-            M.log(i18n.t("log_retry_cb_lost"))
-            return
-        end
-
-        local ok, result = cmdFn()
-        if ok and (not checkFn or checkFn()) then
-            done = true
-            if t then t:stop() end
-            callback(true, result)
-            return
-        end
-
-        retries = retries + 1
-        if retries >= maxAttempts then
-            done = true
-            if t then t:stop() end
-            M.log(i18n.t("log_retry_exhausted"))
-            callback(false, result)
-            return
-        end
-
-        M.log(i18n.t("log_retry_attempt", retries, tostring(waitDelay)))
-    end
-
-    execute()
-
-    if not done then
-        t = timer.new(waitDelay, execute)
         t:start()
     end
 end

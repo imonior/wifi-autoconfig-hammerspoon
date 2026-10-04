@@ -187,7 +187,7 @@
             <div class="section-title" id="section-ipv4">一、IPv4 协议配置</div>
             <div class="form-group">
                 <label id="label-mode">配置类型</label>
-                <select id="mode" onchange="toggleFields()">
+                <select id="mode" onchange="toggleFields(true)">
                     <option value="dhcp">DHCP (动态获取)</option>
                     <option value="manual">Manual (静态绑定)</option>
                 </select>
@@ -201,7 +201,7 @@
             <div class="section-title" id="section-ipv6">二、IPv6 协议配置</div>
             <div class="form-group">
                 <label id="label-v6mode">配置类型</label>
-                <select id="v6mode" onchange="toggleFields()">
+                <select id="v6mode" onchange="toggleFields(true)">
                     <option value="automatic">Automatic (自动配置)</option>
                     <option value="manual">Manual (手动指定)</option>
                     <option value="off">Off (彻底禁用)</option>
@@ -284,14 +284,14 @@
             config_type: "Configuration Type",
             dhcp: "DHCP (Automatic)",
             manual: "Manual (Static)",
-            ip_address: "IP 地址",
-            subnet_mask: "子网掩码",
-            router: "默认网关",
+            ip_address: "IP Address",
+            subnet_mask: "Subnet Mask",
+            router: "Router",
             automatic: "Automatic",
             manual_v6: "Manual",
             off: "Off",
-            prefix_length: "前缀长度",
-            dns_servers: "DNS 服务器",
+            prefix_length: "Prefix Length",
+            dns_servers: "DNS Servers",
             dns_placeholder: "Multiple values separated by comma, leave empty for auto",
             force_apply: "⚡ Force Apply to Current NIC",
             delete: "Delete Config",
@@ -423,6 +423,10 @@
     }
 
     function init() {
+        // The list is rebuilt on every refresh (saving a policy, a hardware status
+        // sync that sees a new SSID), so remember which row was selected instead of
+        // snapping back to the first one and showing a different network's values.
+        const previouslySelectedSSID = currentSelectedSSID;
         const listContainer = document.getElementById("networks-list");
         listContainer.innerHTML = "";
         
@@ -461,6 +465,7 @@
             currentItem.className = "list-item current-connected primary-section";
             const hasConfig = configSsidSet.has(currentSSID);
             currentItem.innerHTML = `<span>📶 ${escapeHtml(currentSSID)}</span>` + (hasConfig ? `<span style="color:#4CAF50;">●</span>` : "");
+            currentItem.dataset.ssid = currentSSID;
             currentItem.onclick = () => selectSSID(currentSSID, currentItem);
             listContainer.appendChild(currentItem);
         }
@@ -469,6 +474,7 @@
             const defaultItemEl = document.createElement("div");
             defaultItemEl.className = "list-item primary-section";
             defaultItemEl.innerHTML = `<span>${escapeHtml(t('global_fallback'))}</span>` + `<span style="color:#4CAF50;">●</span>`;
+            defaultItemEl.dataset.ssid = defaultItem;
             defaultItemEl.onclick = () => selectSSID(defaultItem, defaultItemEl);
             listContainer.appendChild(defaultItemEl);
         }
@@ -484,6 +490,7 @@
                 const item = document.createElement("div");
                 item.className = "list-item";
                 item.innerHTML = `<span>${escapeHtml(ssid)}</span>` + `<span style="color:#4CAF50;">●</span>`;
+                item.dataset.ssid = ssid;
                 item.onclick = () => selectSSID(ssid, item);
                 listContainer.appendChild(item);
             });
@@ -500,15 +507,28 @@
                 const item = document.createElement("div");
                 item.className = "list-item unconfigured";
                 item.innerHTML = `<span>${escapeHtml(ssid)}</span>`;
+                item.dataset.ssid = ssid;
                 item.onclick = () => selectSSID(ssid, item);
                 listContainer.appendChild(item);
             });
         }
 
         const items = listContainer.querySelectorAll(".list-item");
-        if (items.length > 0) {
-            items[0].click();
+        if (items.length === 0) return;
+
+        // Re-select the row that was selected before the rebuild; fall back to the
+        // first row only on the very first render, when nothing was chosen yet.
+        let target = null;
+        if (previouslySelectedSSID) {
+            for (const el of items) {
+                if (el.dataset.ssid === previouslySelectedSSID) {
+                    target = el;
+                    break;
+                }
+            }
         }
+        if (!target) target = items[0];
+        target.click();
     }
 
     function selectSSID(ssid, element) {
@@ -574,10 +594,15 @@
         
         document.getElementById("dns").value = config.dns || "";
 
-        toggleFields();
+        toggleFields(false);
     }
 
-    function toggleFields() {
+    // userInitiated is only true when the dropdown was actually changed by a click.
+    // The current lease is then offered as a starting point, but it is never filled in
+    // during a programmatic re-render: a row that merely displays a policy would get
+    // live addresses dropped into the inputs, and one careless Save would convert a
+    // DHCP network into a static one.
+    function toggleFields(userInitiated) {
         const isV4Manual = document.getElementById("mode").value === "manual";
         const v4Inputs = document.getElementById("v4-manual-inputs");
         
@@ -587,7 +612,7 @@
             const ssid = currentSelectedSSID;
             const isCurrentSSID = ssid === window.currentConnectedSSID;
             
-            if (isCurrentSSID) {
+            if (isCurrentSSID && userInitiated === true) {
                 const ipInput = document.getElementById("ip");
                 const netmaskInput = document.getElementById("netmask");
                 const gatewayInput = document.getElementById("gateway");
@@ -632,7 +657,12 @@
         const prevSSID = window.currentConnectedSSID;
         window.currentConnectedSSID = ssid;
         
-        currentHardwareInfo = { ip: ip || "", netmask: netmask || "", gateway: gateway || "", dns: dns || "" };
+        // getActiveDNS() answers with a localized "system auto" label when the
+        // interface has no explicit servers. That text is not a DNS value, and
+        // copying it into the DNS field would make the next save fail validation.
+        const dnsIsAddresses = (dns || "").split(",").every(entry =>
+            entry.trim() === "" || /^[0-9a-fA-F:.]+$/.test(entry.trim()));
+        currentHardwareInfo = { ip: ip || "", netmask: netmask || "", gateway: gateway || "", dns: dnsIsAddresses ? (dns || "") : "" };
         
         const text = `📶 ${t('current_connection')}: ${ssid || t('not_connected')}
 ━━━━━━━━ IPv4 ━━━━━━━━

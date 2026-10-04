@@ -16,6 +16,9 @@ local networkApply = require("wifi_autoconfig.network_apply")
 local panel = require("wifi_autoconfig.panel")
 
 local M = {}
+
+-- Keep in step with MODULE_VERSION in scripts/install.sh, which is the value the
+-- release package name, the installer banner and the git tag are built from.
 M.VERSION = "3.2.1"
 
 -- The status list is drawn by panel.lua on its own dark surface. Set this to
@@ -27,7 +30,18 @@ local USE_PANEL_MENU = true
 
 local modulePath = utils.modulePath
 local logFilePath = utils.logFilePath
+
+-- The SSID whose policy is known to be on the interface right now. This is a
+-- confirmation, not an intention: it only moves once an apply sequence reports that
+-- every step took effect.
 local currentSSID = nil
+
+-- What an apply sequence is busy with while it is still in flight or waiting for a
+-- retry, how many retries that target has already spent, and the retry timer.
+local applyTarget = nil
+local applyAttempts = 0
+local applyRetryTimer = nil
+
 M.menuBarItem = nil
 M.wifiWatcher = nil
 
@@ -52,6 +66,117 @@ end
 
 local function invalidateStatusCache()
     cacheTimestamp = 0
+    -- The service name / hardware device are cached inside core.lua, and a
+    -- network change is exactly when they may be wrong (renamed service,
+    -- external dongle attached). Drop them too so the next read re-resolves.
+    core.invalidateInterfaceCache()
+end
+
+local function stopApplyRetry()
+    if applyRetryTimer then
+        pcall(function() applyRetryTimer:stop() end)
+        applyRetryTimer = nil
+    end
+end
+
+-- An apply that ended with a failing step is not a finished job, and the reasons are
+-- mostly temporary: the interface had not finished associating after wake, the lease
+-- had not arrived yet, the sudoers rule was added a minute later, config.json was
+-- still being repaired. Waiting for the SSID to change would leave the network in the
+-- half-applied state until the user happened to reconnect, so the audit runs again on
+-- a timer. The cap exists because a permanently broken setup (no rule at all, a policy
+-- that will not parse) must not knock on networksetup forever.
+local APPLY_RETRY_DELAY = 60
+local APPLY_RETRY_LIMIT = 5
+
+local runApplySequence
+
+local function scheduleApplyRetry(ssid)
+    stopApplyRetry()
+    if applyAttempts >= APPLY_RETRY_LIMIT then
+        utils.log(i18n.t("log_apply_gave_up", ssid, APPLY_RETRY_LIMIT))
+        applyTarget = nil
+        applyAttempts = 0
+        return
+    end
+    applyAttempts = applyAttempts + 1
+    utils.log(i18n.t("log_apply_retry_scheduled", ssid, applyAttempts, APPLY_RETRY_DELAY))
+    -- The claim stays with this SSID for the whole wait: it is what makes a repeated
+    -- watcher event a no-op instead of a second concurrent sequence.
+    applyRetryTimer = timer.doAfter(APPLY_RETRY_DELAY, function()
+        applyRetryTimer = nil
+        if applyTarget ~= ssid then return end
+
+        local status = core.getCurrentWiFiStatus()
+        if not status.connected or status.ssid ~= ssid then
+            -- The association we were fixing is gone (or became a different network) while
+            -- the timer waited, so this retry budget belongs to nothing.
+            currentSSID = nil
+            applyTarget = nil
+            applyAttempts = 0
+            return
+        end
+
+        -- applyTarget still holds ssid, which is what keeps the retry budget intact:
+        -- runApplySequence() is entered directly rather than through the audit, and only
+        -- the audit resets the count.
+        runApplySequence(ssid)
+    end)
+end
+
+function runApplySequence(ssid)
+    stopApplyRetry()
+    applyTarget = ssid
+
+    utils.log(i18n.t("log_ssid_change", tostring(currentSSID), ssid))
+    invalidateStatusCache()
+
+    config.read()
+    networkApply.applyNetworkStrategy(ssid, function(applied)
+        -- Only the sequence that still owns this SSID may confirm it. Once another
+        -- network has taken over, that one reports its own outcome.
+        if applyTarget ~= ssid then return end
+        if applied then
+            applyTarget = nil
+            applyAttempts = 0
+            currentSSID = ssid
+        else
+            scheduleApplyRetry(ssid)
+        end
+    end)
+end
+
+function M.performNetworkAudit()
+    local status = core.getCurrentWiFiStatus()
+    if not status.connected or not status.ssid then
+        utils.log(i18n.t("log_wifi_sleep"))
+        -- Forget what was applied. The network that comes back is a new one as far as
+        -- this module is concerned even when it carries the same SSID: the lease can
+        -- have been lost with the association, and an address can have been dropped by
+        -- sleep, a VPN, or the step that failed before the link went down. Leaving the
+        -- name set would make the next watcher event for the same SSID compare equal
+        -- and return, so a reconnect would never be re-audited.
+        stopApplyRetry()
+        applyTarget = nil
+        applyAttempts = 0
+        currentSSID = nil
+        return
+    end
+
+    local ssid = status.ssid
+    if ssid == currentSSID then
+        return
+    end
+
+    -- A sequence is already running for this SSID or is waiting to retry it. Starting
+    -- another would supersede the one in flight and duplicate the report.
+    if ssid == applyTarget then
+        return
+    end
+
+    -- A different network takes over: its retry budget starts from zero.
+    applyAttempts = 0
+    runApplySequence(ssid)
 end
 
 local function refreshNetworkStatusCache(force)
@@ -62,10 +187,10 @@ local function refreshNetworkStatusCache(force)
     cachedNetworkStatus.wifiStatus = core.getCurrentWiFiStatus()
     cachedNetworkStatus.wifiInterface = core.getWiFiServiceName()
 
-    local ip, gw, nm, v4mode = core.getCurrentIPv4Info(cachedNetworkStatus.wifiInterface)
+    -- One `networksetup -getinfo` covers both address families.
+    local ip, gw, nm, v4mode, v6mode, v6ip, v6prefix, v6gw =
+        core.getCurrentIPInfo(cachedNetworkStatus.wifiInterface)
     cachedNetworkStatus.ipv4 = { ip = ip, gw = gw, nm = nm, mode = v4mode }
-
-    local v6mode, v6ip, v6prefix, v6gw = core.getCurrentIPv6Info(cachedNetworkStatus.wifiInterface)
     cachedNetworkStatus.ipv6 = { mode = v6mode, ip = v6ip, prefix = v6prefix, gw = v6gw }
 
     cachedNetworkStatus.dns = core.getActiveDNS()
@@ -73,26 +198,6 @@ local function refreshNetworkStatusCache(force)
     cachedNetworkStatus.isDarkMode = menuBuilder.detectDarkMode()
 
     cacheTimestamp = os.time()
-end
-
-function M.performNetworkAudit()
-    local status = core.getCurrentWiFiStatus()
-    if not status.connected or not status.ssid then
-        utils.log(i18n.t("log_wifi_sleep"))
-        return
-    end
-
-    local ssid = status.ssid
-    if ssid == currentSSID then 
-        return 
-    end
-
-    utils.log(i18n.t("log_ssid_change", tostring(currentSSID), ssid))
-    currentSSID = ssid
-    invalidateStatusCache()
-
-    config.read()
-    networkApply.applyNetworkStrategy(ssid)
 end
 
 local function buildConfigSummary(data)
@@ -154,7 +259,7 @@ local function handleForceApply(data)
 
     utils.log(i18n.t("log_force_apply_with_data", json.encode(data)))
 
-    local choice = dialog.blockAlert(
+    local choice = utils.blockAlertOnce(
         i18n.t("popup_title_confirm_force_apply"),
         buildConfigSummary(data),
         i18n.t("popup_confirm"),
@@ -165,16 +270,47 @@ local function handleForceApply(data)
         return
     end
 
-    currentSSID = data.ssid
+    -- A forced override replaces whatever the automatic path was doing with this
+    -- network: applyConfigToInterface() without a token takes a new run generation, which
+    -- retires the sequence in flight, so the bookkeeping has to be cleared too or the
+    -- SSID would stay claimed by a sequence that can no longer report.
+    stopApplyRetry()
+    applyTarget = nil
+    applyAttempts = 0
     invalidateStatusCache()
 
-    networkApply.applyConfigToInterface(wifiInterface, data, function()
+    networkApply.applyConfigToInterface(wifiInterface, data, function(problems)
+        -- Same rule as the automatic path: the network counts as handled only once every
+        -- step landed. Otherwise a later watcher event re-audits it instead of being
+        -- swallowed by a name that was committed before the first command ran.
+        if not problems or #problems == 0 then
+            currentSSID = data.ssid
+        else
+            currentSSID = nil
+        end
+
         utils.wait(2, function()
             local report = networkApply.buildNetworkReport(i18n.t("config_source_editor"))
-            ui.showPopup("success", i18n.t("popup_title_force_apply_success"), report)
+            ui.showPopup("success", networkApply.resultTitle(problems, i18n.t("popup_title_force_apply_success")),
+                networkApply.withProblems(problems, report))
             ui.syncHardwareStatusToUI()
         end)
     end)
+end
+
+-- Shared by the panel row and the native menu item, so the two commands cannot drift.
+local function forceRedetect()
+    utils.log(i18n.t("log_manual_detect"))
+    -- "Force detect" means re-audit even the network this module is already working on,
+    -- so the claim a running or waiting sequence holds has to be dropped first;
+    -- otherwise the audit below returns at the applyTarget check and the click does
+    -- nothing.
+    stopApplyRetry()
+    applyTarget = nil
+    applyAttempts = 0
+    currentSSID = nil
+    invalidateStatusCache()
+    M.performNetworkAudit()
 end
 
 -- Row model for the self-drawn panel: the status rows come from the shared
@@ -211,12 +347,7 @@ local function buildPanelModel()
                 ui.showPopup("log", i18n.t("recent_system_logs"), content)
             end,
             dhcp = function() networkApply.setCurrentNetworkToDHCP() end,
-            detect = function()
-                utils.log(i18n.t("log_manual_detect"))
-                currentSSID = nil
-                invalidateStatusCache()
-                M.performNetworkAudit()
-            end
+            detect = forceRedetect
         }
     }
 end
@@ -275,23 +406,12 @@ local function buildMenuBar()
                 })
                 table.insert(menuItems, { 
                     title = styledtext.new("🔍 " .. i18n.t("menu_force_detect"), { font = { size = 12 } }),
-                    fn = function() 
-                        utils.log(i18n.t("log_manual_detect"))
-                        currentSSID = nil
-                        invalidateStatusCache()
-                        M.performNetworkAudit()
-                    end
+                    fn = forceRedetect
                 })
             
                 return menuItems
             end)
         end
-    end
-end
-
-function M.refreshMenuBar()
-    if M.menuBarItem then
-        buildMenuBar()
     end
 end
 
@@ -344,6 +464,7 @@ function M.init()
     -- accumulate stale taps/timers from the previous module instance.
     hs.shutdownCallback = function()
         pcall(function() if M.statusTimer then M.statusTimer:stop() end end)
+        stopApplyRetry()
         pcall(panel.hide)
         pcall(panel.destroy)
     end

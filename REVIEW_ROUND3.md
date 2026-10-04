@@ -1,4 +1,6 @@
-## Wi-Fi AutoConfig for Hammerspoon 第三轮完整审查报告（2026-07-25）
+## Wi-Fi AutoConfig for Hammerspoon 第三轮完整审查报告（2026-07-25）【历史文档】
+
+> **⚠️ Historical document — last updated 2026-07-25.** This report reflects the codebase state at v2 and is superseded by subsequent releases (v3.0.0+). Most issues listed here have been addressed in later iterations. See [CHANGELOG.md](CHANGELOG.md) for current status.
 
 ### 本轮变更概述
 

@@ -2,7 +2,7 @@
 
 # Wi-Fi AutoConfig for Hammerspoon
 
-> A high-performance, fully async macOS network auto-switcher built on Hammerspoon.
+> A macOS network auto-switcher built on Hammerspoon, with timer-driven waits instead of blocking sleeps.
 
 Automatically switches network configurations (static IP / DHCP / custom DNS / IPv6) based on the connected Wi-Fi SSID. Detects SSID changes in real time and applies the matching profile within seconds.
 
@@ -17,10 +17,11 @@ Automatically switches network configurations (static IP / DHCP / custom DNS / I
 - **WebView configuration editor** — Built-in HTML/CSS UI for managing network profiles with live hardware status sync
 - **Menu bar integration** — Quick access to settings, logs, DHCP reset, and force re-detection
 - **Self-drawn status panel** — the menu-bar status view is a custom borderless WebKit panel with a fixed dark surface, so the amber/green section colours stay readable in both light and dark mode and informational rows never highlight on hover (falls back to the native menu automatically)
+- **Honest results** — The status of every `networksetup` call is collected; if a step fails (no passwordless sudo rule, for instance) the popup lists what did not complete instead of reporting success
 - **Bilingual (zh/en)** — Auto-detects system language via `hs.host.locale`
 - **7-day log rotation** — Automatic cleanup of log entries older than 7 days
-- **Startup auto-apply** — On Hammerspoon load, applies the current SSID's config with retry logic (5 attempts, 1s interval) for Wi-Fi readiness
-- **Config validation** — IP/netmask/gateway/DNS format validation on save, prevents broken network settings
+- **Startup audit** — Applies the current SSID's config when Hammerspoon loads, then on every Wi-Fi event
+- **Config validation** — IPv4, IPv6, subnet, gateway and DNS format validation before anything is saved or applied, so a typo cannot push a broken address onto the interface
 
 ## Quick Install
 
@@ -57,7 +58,7 @@ This will:
 2. Download the project tarball and install to `~/.hammerspoon/wifi_autoconfig/`
 3. Inject `require("wifi_autoconfig.init")` into `~/.hammerspoon/init.lua` (idempotent)
 4. Reload Hammerspoon
-5. Optionally set up passwordless sudo for `/usr/sbin/networksetup` so network switches never prompt for a password
+5. Optionally set up passwordless sudo for `/usr/sbin/networksetup` so network switches run silently — without it the changes fail rather than prompting, and the popup lists which steps did not complete
 
 ## Update
 
@@ -93,6 +94,8 @@ bash scripts/uninstall.sh --force      # Skip prompts, auto-backup config to ~/.
 ```
 
 The uninstaller backs up your `config.json` to `~/.wifi_autoconfig_backups/wifi_autoconfig_config_backup.json` before removing the module. Override the location with the `BACKUP_DIR` environment variable. Hammerspoon itself is not removed.
+
+It also cleans up what the installer left outside the module directory. The passwordless sudoers drop-in is removed only if it carries the marker line the installer writes, so a file you edited yourself - or that another tool created - is printed instead of deleted, and the same rule applies to the older drop-in names. The `require` line in `~/.hammerspoon/init.lua` is removed with the file backed up first, and a reference the uninstaller does not recognise is reported rather than rewritten. Questions go to `/dev/tty`, so a `curl | bash` run cannot have the rest of its own script body read as the answer. With no terminal attached the uninstaller keeps the safe defaults (your `config.json` is still backed up) and then stops with an explanation rather than answering the confirmation on your behalf.
 
 ## Migrating from a previous version
 
@@ -144,6 +147,12 @@ bash scripts/build-release.sh
 # produces dist/wifi-autoconfig-hammerspoon-vX.Y.Z.zip and release.html
 ```
 
+The version comes from `MODULE_VERSION` in `scripts/install.sh`, and the script refuses to
+build unless a git tag matches it: a package named v3.2.1 that is not tagged v3.2.1 (or was
+tagged from a different commit) is exactly how a release page ends up pointing at the wrong
+bytes. It warns when the matching tag is not on the current commit, and at the end it notes
+whether the generated `release.html` / `RELEASE.md` differ from the committed copies.
+
 ## Manual Install
 
 1. Install [Hammerspoon](https://hammerspoon.org)
@@ -179,13 +188,13 @@ end)
 ### Auto-switching flow
 
 1. `hs.wifi.watcher` detects SSID change → triggers `performNetworkAudit()`
-2. Looks up config for the new SSID (falls back to `__DEFAULT__`, then raw DHCP)
+2. Looks up config for the new SSID (falls back to `__DEFAULT__`, then raw DHCP; if `config.json` cannot be parsed the switch is skipped instead)
 3. Applies network settings via `networksetup` commands with sudo:
    - `networksetup -setmanual` / `-setdhcp` for IPv4
    - `networksetup -setv6manual` / `-setv6automatic` / `-setv6off` for IPv6
    - `networksetup -setdnsservers` for DNS (empty = clear to DHCP)
 4. Polls via `waitForCondition()` to verify IP/DNS actually took effect
-5. Sends a macOS notification and shows a popup with the full network report
+5. Sends a macOS notification and shows a popup with the full network report, listing every step that did not complete (the title changes to "partially applied" when the list is not empty)
 
 ### Config source types
 
@@ -203,7 +212,7 @@ end)
 | Open Settings | Opens the WebView configuration editor |
 | View Logs | Shows recent log entries in a popup |
 | Set Current Network to DHCP | Immediately resets current interface to DHCP + auto DNS |
-| Force Network Detection | Closes editor, clears SSID cache, re-runs network audit |
+| Force Network Detection | Clears the remembered SSID and re-runs the network audit immediately |
 
 ## Configuration
 
@@ -213,12 +222,12 @@ Edit `~/.hammerspoon/wifi_autoconfig/config.json`, or use the built-in editor (m
 
 | Field | Description |
 |-------|-------------|
-| `mode` | `"dhcp"` or `"manual"` |
+| `mode` | `"dhcp"` or `"manual"`, checked on save and again before anything is applied. A stored entry from an older version that has no `mode` field is read as `dhcp` |
 | `ip` | IPv4 address (manual mode) |
 | `netmask` | Subnet mask (default: `255.255.255.0`) |
-| `gateway` | Router IP (manual mode) |
-| `dns` | DNS servers, comma-separated. Empty = DHCP auto |
-| `v6mode` | `"automatic"`, `"manual"`, or `"off"` |
+| `gateway` | Router IP. Required in manual mode: `-setmanual` takes it as a positional argument, so an omitted value used to be sent as the literal text `nil` |
+| `dns` | DNS servers, comma-separated (a JSON array is accepted and stored back as a comma-separated string). Empty = DHCP auto |
+| `v6mode` | `"automatic"`, `"manual"`, or `"off"`. Omitted or empty = IPv6 left as it is; only `"off"` disables it. Any other value is refused before a command runs |
 | `ipv6` | IPv6 address (manual mode) |
 | `v6prefix` | IPv6 prefix length (default: `64`) |
 | `v6gateway` | IPv6 router (manual mode) |
@@ -259,16 +268,17 @@ wifi-autoconfig-hammerspoon/
 ├── scripts/                  # Installer scripts
 │   ├── install.sh            # One-command installer (--update / --force / --help)
 │   ├── uninstall.sh          # Uninstaller (--force)
-│   ├── legacy-install.sh    # One-step upgrade: clean a pre-1.0 install then install v3.0.0
+│   ├── legacy-install.sh    # One-step upgrade: clean a pre-1.0 install, then install the current version
 │   └── legacy-uninstall.sh   # One-time full removal of a pre-1.0 install
 ├── config.example.json       # Example config template
 ├── src/                      # Source code directory
 │   ├── init.lua              # Entry: menu bar, Wi-Fi watcher, auto-switch, startup audit
-│   ├── core.lua              # Core: sudo networksetup, Wi-Fi status, RSSI, DNS, IPv6
+│   ├── core.lua              # Core: sudo networksetup, Wi-Fi status, IPv4/IPv6, DNS, VPN
 │   ├── config.lua            # Data: config persistence + hs.urlevent handlers + validation
 │   ├── utils.lua             # Utils: logging (7-day rotation), async wait/poll, HTML escape
 │   ├── i18n.lua              # i18n: zh/en translations, auto-detect via hs.host.locale
-│   ├── menu_builder.lua      # Menu Builder: menubar construction + dark mode detection
+│   ├── menu_builder.lua      # Menu rows for both surfaces + dark mode detection
+│   ├── panel.lua             # Status panel: borderless WKWebView replacement for the NSMenu
 │   ├── network_apply.lua     # Network Apply: network configuration application logic
 │   └── ui/                   # Presentation
 │       ├── web_view.lua      #   WebView controller: window lifecycle, editor + popup management
@@ -279,27 +289,41 @@ wifi-autoconfig-hammerspoon/
 
 ### Layer responsibilities
 
-- **Presentation layer** (`ui/`): WebView windows and HTML templates. The editor injects config JSON and network list into HTML at runtime, communicates back via `hs.urlevent` URL schemes (`hammerspoon://save_wifi_scene`, `hammerspoon://force_apply_network`, etc.).
-- **Core logic** (`core.lua`): All network operations via `networksetup` with sudo, with `shellQuote()` for safe argument escaping. Wi-Fi status detection uses `hs.wifi.currentNetwork()` for SSID, `hs.wifi.interfaceDetails()` for RSSI (with `system_profiler SPAirPortDataType` as fallback).
-- **Data layer** (`config.lua`): JSON-based config with IPv4/DNS format validation on save. Stored at `~/.hammerspoon/wifi_autoconfig/config.json`.
-- **Utilities** (`utils.lua`): Async helpers — `waitForCondition()` polls with configurable timeout/interval, `executeWithRetry()` for retry logic. Log file auto-rotates entries older than 7 days.
+- **Presentation layer** (`ui/`, `panel.lua`): WebView windows and HTML templates. The editor injects config JSON and the network list into the HTML at runtime and communicates back through `hs.urlevent` URL schemes (`hammerspoon://save_wifi_scene`, `hammerspoon://force_apply_network_with_confirm`, etc.). `panel.lua` draws the menu-bar status list itself.
+- **Core logic** (`core.lua`): All network operations via `networksetup` with sudo, with `shellQuote()` for safe argument escaping. The SSID comes from `hs.wifi.currentNetwork()`, falling back to `networksetup -getairportnetwork`; `networksetup -getinfo` is parsed once per read and shared by the IPv4 and IPv6 views.
+- **Data layer** (`config.lua`): JSON-based config with IPv4/IPv6/subnet/gateway/DNS/mode format validation on save, checked again before a stored policy is applied, stored at `~/.hammerspoon/wifi_autoconfig/config.json`. If that file stops parsing (a hand-edit typo, for example), the module keeps working from the last good table in memory, leaves the file untouched on disk, and refuses every write until it parses again - so a failed read can never replace your policies. A modal dialog blocks until you either repair the file (**Retry** re-reads it in place, no reload needed) or say you will handle it later. The same protection covers a file that disappears or is truncated to zero bytes while policies are loaded: those are treated as a loss to recover from, not as "no policies".
+- **Utilities** (`utils.lua`): Timer-based helpers — `waitForCondition()` polls with a configurable timeout and interval, `wait()` defers a callback, `blockAlertOnce()` shows a dialog only if no other dialog is waiting for an answer. Log file auto-rotates entries older than 7 days.
 
-All network operations are **fully async** using `hs.timer.doAfter` — no blocking calls.
+Network changes are driven by timers: the apply sequence waits on `hs.timer` polls (`waitForCondition`) instead of sleeping, so a switch does not freeze Hammerspoon. Two calls are deliberately blocking: `hs.dialog.blockAlert` for the force-apply confirmation and for the unreadable-config dialogs, and every `io.popen` command itself (a wedged `networksetup` would stall the timer callback that issued it - see the note in `core.lua`). Because a blocking dialog runs a nested modal loop, all of them go through one guard: a dialog requested while another is still open is skipped and logged rather than stacked on top. An apply sequence that is still waiting when you switch networks again is dropped rather than resumed: each sequence carries a token, and a superseded one stops writing DNS or IPv6 onto an interface that has already moved on to another network.
 
 ## Requirements
 
 - macOS 13+ (tested on macOS 15 Sequoia)
 - Hammerspoon 0.4.3+
-- Sudo access (for `networksetup` commands — the installer can set up passwordless sudo, otherwise Hammerspoon prompts on first use)
-- Location Services access (optional, for Wi-Fi RSSI signal strength display)
+- **Accessibility / Input Monitoring permission** — The module uses `hs.eventtap` to detect when the WebView configuration editor is focused, so that keyboard shortcuts (⌘S to save, ⌘W to close) work reliably. Without this permission, the editor will still open but those shortcuts won't respond. Grant access in **System Settings → Privacy & Security → Accessibility** or **Input Monitoring**, then reload Hammerspoon.
+- Sudo access for `networksetup`. The installer can write a passwordless sudoers rule for **your account only**; without it, network changes fail instead of prompting (see Troubleshooting).
 
 ## Troubleshooting
 
-**Sudo prompts**: The module uses `sudo /usr/sbin/networksetup` to change network settings. During install, the installer can optionally write a passwordless sudoers rule to `/etc/sudoers.d/hammerspoon_wificonfig`, so network switches run silently without prompting. The rule is scoped to the subcommands the module actually uses (`setmanual`, `setdhcp`, `setdnsservers`, `setv6manual`, `setv6automatic`, `setv6off`, `listallnetworkservices`) rather than granting the whole binary. If you skipped that step (or on a machine without the rule), configure it manually: run `sudo visudo -f /etc/sudoers.d/hammerspoon_wificonfig` and add `<your-user> ALL=(root) NOPASSWD: /usr/sbin/networksetup -setmanual *, /usr/sbin/networksetup -setdhcp *, /usr/sbin/networksetup -setdnsservers *, /usr/sbin/networksetup -setv6manual *, /usr/sbin/networksetup -setv6automatic *, /usr/sbin/networksetup -setv6off *, /usr/sbin/networksetup -listallnetworkservices *` (validate with `visudo -cf <file>` before saving).
+**Nothing changes when the network switches**: The module runs `sudo /usr/sbin/networksetup`, and `io.popen` gives sudo no terminal, so a missing sudoers rule does not produce a password prompt - the command simply fails and the result popup lists the steps that did not complete. During install the installer can write a passwordless rule to `/etc/sudoers.d/hammerspoon_wificonfig` for **your account only**. It is deliberately not granted to `%admin`: a passwordless `-setdnsservers` reachable by every admin on the machine is a DNS-hijack primitive that outlives this module. The rule names only the subcommands the module uses (`setmanual`, `setdhcp`, `setdnsservers`, `setv6manual`, `setv6automatic`, `setv6off`, `listallnetworkservices`) instead of the whole binary, and `scripts/uninstall.sh` removes the file when you uninstall. The file is staged to a temporary path, checked with `visudo -cf` and only then moved into place, so a failed check cannot leave a broken drop-in behind; the installer then verifies the rule actually works for your account before reporting success. It asks before writing, and when there is no terminal to ask on (a piped `curl | bash`) it declines to write the rule and prints the command to add it yourself - a standing grant should not appear because nobody was there to answer.
 
-**RSSI shows as Unknown**: macOS 15+ requires Location Services access for Wi-Fi signal info. Go to System Settings → Privacy & Security → Location Services → enable Hammerspoon. If unavailable, the signal line is hidden from popups.
+To add it yourself, run `sudo visudo -f /etc/sudoers.d/hammerspoon_wificonfig`, add the line below with `<your-user>` replaced by your account name, and validate with `sudo visudo -cf /etc/sudoers.d/hammerspoon_wificonfig`:
 
-**Config not applying on startup**: The module retries 5 times (1s interval) waiting for Wi-Fi to connect after Hammerspoon loads. Check logs via menu bar → View Logs for `runInitialAudit` entries.
+```
+<your-user> ALL=(root) NOPASSWD: /usr/sbin/networksetup -setmanual *, /usr/sbin/networksetup -setdhcp *, /usr/sbin/networksetup -setdnsservers *, /usr/sbin/networksetup -setv6manual *, /usr/sbin/networksetup -setv6automatic *, /usr/sbin/networksetup -setv6off *, /usr/sbin/networksetup -listallnetworkservices *
+```
+
+Earlier installs may have written this rule to `/etc/sudoers.d/hammerspoon_netconfig` or `/etc/sudoers.d/hammerspoon_network`, and v3.1.0 granted the whole binary rather than the individual subcommands. The installer looks for any drop-in that mentions `networksetup`, prints its contents, and says whether it is wider than the current rule (granted to a group such as `%admin`, or granting the bare binary with no subcommand) and which required subcommands it leaves out. Sudo treats separate rules as alternatives, so a wide leftover keeps working no matter how narrow the new file is - which is why the installer, once the new rule has verified, deletes the leftovers **it wrote** (recognised by the marker line in the file). A file it did not write is never touched: its contents are printed and you are told how to review it with `visudo -f`. Because that leftover stays in force either way, the installer narrows the rule it manages (`hammerspoon_wificonfig`) even when an unmarked wide file already makes the passwordless probe pass, and it warns that it only did so after the new grant was confirmed; if you decline the rule while an over-wide file exists, it says plainly that nothing was written and the broader permission is still granted. A drop-in it cannot read without a password is reported as unknown rather than guessed at.
+
+**A dialog says config.json cannot be parsed**: The module stops there and waits for you. Your policies are still in that file - it only stopped reading it, and it refuses to write until it parses again, so a stray comma cannot cost you the whole file. Fix the syntax (a JSON linter, or `plutil -lint`) and press **Retry**: the file is re-read and writing plus automatic switching resume immediately, without reloading Hammerspoon. Pressing **Handle it later** keeps everything in the safe state, and the same unchanged bytes will not interrupt you again (a new break will). While the file is unreadable, automatic switching is skipped rather than falling back to DHCP, and a save or delete you attempt from the editor is refused with its own dialog - the policy is not left half-applied in memory.
+
+**A dialog says config.json has gone missing**: The same safety state, reached differently - the file was deleted or truncated to zero bytes while the module still held policies in memory. Accepting that would mean an empty policy table, and the next switch would then find no policy for the SSID and force the interface onto DHCP, costing a static network its address. So the policies are kept, writing stays refused and switching is skipped until you bring the file back (restore it from a backup, or from `config.json.backup` next to it), after which **Retry** picks it up with no reload. **Handle it later** keeps that state without interrupting you again. If you meant to delete the file, reload Hammerspoon afterwards: with nothing loaded in memory an absent file is a first run, and an empty one is written.
+
+**A notification says a policy was skipped**: A stored policy that would be dangerous to hand to `networksetup` is refused before any command runs, and the interface simply keeps what the system gave it. That covers a `mode` that is neither `dhcp` nor `manual`, a manual policy with no gateway (the argument is positional, so it used to travel as the literal text `nil`), a malformed address, and a `v6mode` outside `automatic` / `manual` / `off`. The log names the SSID and the field; fix it in the editor or in `config.json`.
+
+**IPv6 is missing after a switch**: A policy changes IPv6 only when it declares `v6mode` (`automatic`, `manual` or `off`). Policies written before that field existed, or hand-edited without it, leave the current IPv6 configuration untouched. A manual IPv6 policy that is missing its address, prefix or router is skipped as a set rather than applied half-way, and the result popup says so instead of reporting success.
+
+**Config not applying on startup**: The audit runs once while Hammerspoon loads and then on every Wi-Fi event, so a network that joins later is picked up by the watcher. If the machine is still associating with the access point when the module starts, use menu bar → Force Network Detection to re-run the audit by hand. Check menu bar → View Logs for the applied rule and any step that failed.
 
 **Log file location**: `~/.hammerspoon/wifi_autoconfig/wifi_autoconfig.log` (entries older than 7 days are pruned automatically)
 
