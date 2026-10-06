@@ -16,7 +16,7 @@ Automatically switches network configurations (static IP / DHCP / custom DNS / I
 - **Force-apply from editor** — Apply editor contents directly to the network interface without saving, with a confirmation dialog showing full config details
 - **WebView configuration editor** — Built-in HTML/CSS UI for managing network profiles with live hardware status sync
 - **Menu bar integration** — Quick access to settings, logs, DHCP reset, and force re-detection; double-clicking the icon opens the settings editor
-- **VPN route summary** — each tunnel or VPN lists how many networks it has installed in the routing table (and a few of them), separate from its gateway and DNS, so a split-tunnel VPN is visibly different from a full-tunnel one
+- **VPN route summary** — each tunnel or VPN lists, in one row per address family, how many networks it has installed in the routing table (and a few of them), separate from its gateway and DNS, so a split-tunnel VPN is visibly different from a full-tunnel one
 - **Self-drawn status panel** — the menu-bar status view is a custom borderless WebKit panel with a fixed dark surface, so the amber/green section colours stay readable in both light and dark mode and informational rows never highlight on hover (falls back to the native menu automatically)
 - **Honest results** — The status of every `networksetup` call is collected; if a step fails (no passwordless sudo rule, for instance) the popup lists what did not complete instead of reporting success
 - **Bilingual (zh/en)** — Auto-detects system language via `hs.host.locale`
@@ -224,10 +224,10 @@ Each detected tunnel or VPN reports three different things, and they are not int
 | Row | What it is | What it decides |
 |-----|------------|-----------------|
 | `IPv4/gateway`, `Gateway (IPv6)` | The next hop the tunnel advertises. The IPv4 one rides the address line after `>>` (`IPv4/gateway: 10.0.0.2>>198.18.0.1`); the IPv6 gateway gets its own row, and only when the interface has an IPv6 address. A tunnel whose route table offers nothing but a link-layer gateway (`link#N`) is shown with its point-to-point peer address instead. | Which router the packets handed to that interface go to |
-| `Route` | How many networks the tunnel has installed in the routing table, with up to three of them and the total (`Route: 10.0.0.0/8, 192.168.0.0/16 (137 total)`) | **Which destinations go through the tunnel at all** — this is what split tunnelling is made of |
+| `Route (IPv4)`, `Route (IPv6)` | How many networks the tunnel has installed for that address family, with up to three of them and the family's own total (`Route (IPv4): 10.0.0.0/8, 192.168.0.0/16 (137 total)`). A family with no route of its own shows no row, so an IPv4-only tunnel never looks like it carries IPv6 traffic. | **Which destinations go through the tunnel at all** — this is what split tunnelling is made of |
 | `DNS` | The resolver the interface is configured with | How a name becomes an address; it says nothing about which path the traffic then takes |
 
-So a VPN that takes over everything has a default route and a very large `Route` count, while a split-tunnel VPN shows only its own address ranges — the `Route` row is what tells those two apart, and it is also what explains a "the VPN is connected but this site still goes out the WAN" case. The `Default egress` marker next to an address means that interface currently holds the system default route.
+So a VPN that takes over everything has a default route and a very large `Route` count, while a split-tunnel VPN shows only its own address ranges — the `Route` rows are what tell those two apart, and it is also what explains a "the VPN is connected but this site still goes out the WAN" case. The `Default egress` marker next to an address means that interface currently holds the system default route.
 
 ## Configuration
 

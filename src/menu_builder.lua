@@ -167,20 +167,28 @@ function M.buildStatusRows(cache)
             if v.details and v.details.ip6 then
                 rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_label_ipv6") .. ": " .. v.details.ip6 }
             end
-            if v.routeNetworks then
-                -- Which networks actually leave through this tunnel. A full-tunnel VPN
-                -- installs thousands of routes, so the row lists a few and gives the total.
-                local shown = {}
-                for i = 1, math.min(3, #v.routeNetworks.samples) do
-                    shown[#shown + 1] = v.routeNetworks.samples[i]
+            -- Which networks actually leave through this tunnel, one row per
+            -- address family. A full-tunnel VPN installs thousands of routes, so
+            -- each row lists a few and gives the count for its own family; a
+            -- family with no route of its own gets no row.
+            local route = v.routeNetworks
+            if route then
+                for _, fam in ipairs({ {"v4", " (IPv4)"}, {"v6", " (IPv6)"} }) do
+                    local info = route[fam[1]]
+                    if info then
+                        local shown = {}
+                        for i = 1, math.min(3, #info.destinations) do
+                            shown[#shown + 1] = info.destinations[i]
+                        end
+                        local more = info.count > #shown
+                            and (" (" .. i18n.t("menu_vpn_routes_more"):format(info.count) .. ")") or ""
+                        rows[#rows + 1] = {
+                            kind = "muted",
+                            indent = 2,
+                            text = i18n.t("menu_label_route") .. fam[2] .. ": " .. table.concat(shown, ", ") .. more
+                        }
+                    end
                 end
-                local more = v.routeNetworks.count > #shown
-                    and (" (" .. i18n.t("menu_vpn_routes_more"):format(v.routeNetworks.count) .. ")") or ""
-                rows[#rows + 1] = {
-                    kind = "muted",
-                    indent = 2,
-                    text = i18n.t("menu_label_route") .. ": " .. table.concat(shown, ", ") .. more
-                }
             end
             if v.route then
                 -- Only show the IPv6 gateway when the interface actually has an IPv6 address,

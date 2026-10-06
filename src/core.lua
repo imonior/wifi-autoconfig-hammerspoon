@@ -966,26 +966,17 @@ function M.getVPNInfo()
             v.defaultEgress4 = (routeMap.defaultIface4 == v.interface)
             v.defaultEgress6 = (routeMap.defaultIface6 == v.interface)
 
-            -- Split-tunnel summary: how many networks this interface carries, plus a few
-            -- of them. netstat abbreviates IPv4 networks; both families are expanded by
-            -- normalizeRouteDest before they get here.
+            -- Split-tunnel summary, kept per family: netstat is read once per
+            -- family and the two address spaces mean different things, so the
+            -- menu shows one row each rather than a merged total. netstat
+            -- abbreviates IPv4 networks; those are expanded by normalizeRouteDest
+            -- before they get here.
             local nr4 = routeMap.routes4[v.interface]
             local nr6 = routeMap.routes6[v.interface]
-            local total = (nr4 and nr4.count or 0) + (nr6 and nr6.count or 0)
-            if total > 0 then
-                local samples, seen = {}, {}
-                for _, list in ipairs({ (nr4 and nr4.destinations) or {}, (nr6 and nr6.destinations) or {} }) do
-                    for _, d in ipairs(list) do
-                        if not seen[d] then
-                            seen[d] = true
-                            samples[#samples + 1] = d
-                        end
-                    end
-                end
-                v.routeNetworks = { count = total, samples = samples }
-            else
-                v.routeNetworks = nil
-            end
+            v.routeNetworks = {
+                v4 = (nr4 and nr4.count > 0) and nr4 or nil,
+                v6 = (nr6 and nr6.count > 0) and nr6 or nil,
+            }
         else
             v.route = nil
             v.routeNetworks = nil
