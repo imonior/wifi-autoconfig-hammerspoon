@@ -1,4 +1,4 @@
-# Wi-Fi AutoConfig for Hammerspoon v3.2.2
+# Wi-Fi AutoConfig for Hammerspoon v3.2.3
 
 A Hammerspoon-based macOS Wi-Fi network auto-switching tool. This release ships a
 **self-contained offline install bundle** — download the zip, extract, and run
@@ -16,7 +16,7 @@ A Hammerspoon-based macOS Wi-Fi network auto-switching tool. This release ships 
 ## Offline install / 离线安装
 
 ```bash
-unzip wifi-autoconfig-hammerspoon-v3.2.2.zip
+unzip wifi-autoconfig-hammerspoon-v3.2.3.zip
 cd wifi-autoconfig-hammerspoon
 bash scripts/install.sh
 ```
