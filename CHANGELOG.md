@@ -7,6 +7,20 @@ All notable changes to **Wi-Fi AutoConfig for Hammerspoon** are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.4] - 2026-10-07
+
+### Fixed
+
+- **A network that never went down is no longer reconfigured as a reconnect** — `hs.wifi.currentNetwork()` answers nil for an instant around any Wi-Fi state change, and `hs.wifi.watcher` fires for those changes too, so the module read one "not connected" as a disconnect and dropped the SSID it had confirmed. Its next event, about a second later, named the network that had been online the whole time, and with nothing remembered that was a new network: `networksetup -setv6off`, `-setmanual` and `-setdnsservers` went out again and a "Network Configuration Applied" popup followed a change nobody had made. Every occurrence in this module's log has the same shape, seconds apart — `20:56:36 WiFi interface is sleeping or not connected` then `20:56:37 Detected wireless network change: [nil] -> [ASUS_AC68U_QS_5G]`, twice more that evening and again after midnight. A down reading now has to survive a second read three seconds later: a link back under the same name was never lost and nothing is written, a link back under a different name is the change it looks like and gets its rule applied, and only a link that stays down clears the remembered SSID — so a real reconnect is still re-applied, since the address a policy set can be lost with the association. A confirmed disconnect also retires the retry a failed apply had left pending for that network, which is what lets the reconnect be audited at once instead of waiting on a timer for a network that is gone.
+
+### Changed
+
+- **The trigger decides whether a rule is written, not a reading of the interface** — the audit compares the current SSID with the network whose policy it last applied in full and stops there when the names match; it no longer asks the interface what it currently holds. Reloading the configuration therefore applies the rule for the network you are on and reports the result, which is the point of a reload, and force detection, force apply and set-to-DHCP keep writing unconditionally as they always did. The event that used to need suppressing is handled where it comes from instead of being papered over at the last step.
+
+### Removed
+
+- **The interface comparison added in 3.2.3** — `core.interfaceMatchesPolicy()` and the `core.getExplicitDNSServers()` helper it existed for are gone, along with the two call sites that let an apply finish without issuing a command. It silenced the repeat popup correctly but also silenced the report a deliberate trigger is supposed to produce, and it cost an extra `networksetup -getinfo` plus `-getdnsservers` on every apply.
+
 ## [3.2.3] - 2026-10-07
 
 ### Fixed

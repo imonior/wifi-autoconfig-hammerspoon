@@ -18,7 +18,7 @@ set -e
 GITHUB_USER="imonior"
 GITHUB_REPO="wifi-autoconfig-hammerspoon"
 GITHUB_BRANCH="main"
-MODULE_VERSION="3.2.3"
+MODULE_VERSION="3.2.4"
 
 # GitHub proxy support (for users in China)
 # Usage: GITHUB_PROXY=https://ghfast.top/ bash install.sh

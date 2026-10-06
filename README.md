@@ -190,13 +190,15 @@ end)
 
 1. `hs.wifi.watcher` detects SSID change → triggers `performNetworkAudit()`
 2. Looks up config for the new SSID (falls back to `__DEFAULT__`, then raw DHCP; if `config.json` cannot be parsed the switch is skipped instead)
-3. Compares the live interface against that policy first (`networksetup -getinfo` plus `-getdnsservers`): when the IPv4 address, subnet mask, router, IPv6 mode and DNS servers already say what the policy asks for, nothing is written and no notification or popup follows. The watcher also fires on a wake from sleep, where the network has usually not changed at all, so this is what keeps an unchanged network from being reconfigured and announced every time. Anything the comparison cannot confirm — an unreadable service, an unrecognised mode, a missing field — counts as a difference, and the write still happens.
+3. Compares the SSID with the network whose policy was last applied in full. The same name stops the audit there and writes nothing - it does not go and re-read the interface to double-check that the settings still hold. A name it has not applied, or no remembered name at all, continues to step 4; that second case is what `Reload Config` does, so a reload applies the rule for the network you are on and reports the result.
 4. Applies network settings via `networksetup` commands with sudo:
    - `networksetup -setmanual` / `-setdhcp` for IPv4
    - `networksetup -setv6manual` / `-setv6automatic` / `-setv6off` for IPv6
    - `networksetup -setdnsservers` for DNS (empty = clear to DHCP)
 5. Polls via `waitForCondition()` to verify IP/DNS actually took effect
 6. Sends a macOS notification and shows a popup with the full network report, listing every step that did not complete (the title changes to "partially applied" when the list is not empty)
+
+A reading that reports no network is not taken at face value. `hs.wifi.currentNetwork()` answers nil for an instant around any Wi-Fi state change, and the watcher fires for those as well, so one such reading used to drop the remembered SSID; the event that followed about a second later named the network that had been there all along, and it was reconfigured and announced as though it were new. A down reading now has to survive a second look three seconds later. A link back under the same name was never lost, so nothing happens; a link back under a different name is the change it looks like and gets applied; only a link that stays down clears the remembered SSID, so a reconnect to the same network is still re-applied - the address a policy set can have gone with the association.
 
 ### Config source types
 
@@ -214,7 +216,7 @@ end)
 | Open Settings | Opens the WebView configuration editor |
 | View Logs | Shows recent log entries in a popup |
 | Set Current Network to DHCP | Immediately resets current interface to DHCP + auto DNS |
-| Force Network Detection | Clears the remembered SSID and re-runs the network audit immediately. The audit still compares before writing, so an interface that already matches its policy stays untouched — the editor's **force apply** is the path that writes unconditionally |
+| Force Network Detection | Clears the remembered SSID and re-runs the network audit immediately, so the rule for the network you are on is written again and reported |
 
 **Clicking the icon** — one click opens the status panel, a second click on the icon while it is open closes it, and a **double-click opens the settings editor** directly (the panel comes down with it). The double-click is recognised from the gap between the two clicks rather than from a system click count, because `hs.menubar`'s click callback reports only the modifier keys; the window is 0.4s. It applies to the self-drawn panel - the native-menu fallback path (used only when the WebKit panel cannot be created) has no click callback to intercept, so there a double-click just opens and closes the menu.
 

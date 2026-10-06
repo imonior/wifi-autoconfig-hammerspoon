@@ -19,7 +19,7 @@ local M = {}
 
 -- Keep in step with MODULE_VERSION in scripts/install.sh, which is the value the
 -- release package name, the installer banner and the git tag are built from.
-M.VERSION = "3.2.3"
+M.VERSION = "3.2.4"
 
 -- The status list is drawn by panel.lua on its own dark surface. Set this to
 -- false to go back to the native hs.menubar menu: it keeps the system menu
@@ -146,22 +146,70 @@ function runApplySequence(ssid)
     end)
 end
 
+-- A single read can call the link "gone" when it never was. hs.wifi.currentNetwork()
+-- answers nil for an instant around any Wi-Fi state change the watcher also fires for -
+-- power state, service order, a VPN coming up - and the audit used to treat that one
+-- reading as a disconnect and forget the applied SSID. The watcher then delivered its
+-- second event for the same network about a second later, the name no longer matched
+-- anything, and the full command sequence ran against a network that had been online
+-- the whole time, complete with a report for a change nobody made. So a down reading
+-- is only acted on once it survives a re-check: an association that is back under the
+-- same name was never lost, and a real one stays down long enough to be confirmed.
+local DISCONNECT_RECHECK_DELAY = 3
+local disconnectCheck = 0
+
+local function cancelDisconnectCheck()
+    disconnectCheck = disconnectCheck + 1
+end
+
+-- The network is gone for good, as far as this module is concerned: the address a
+-- manual policy set can be dropped with the association, and a lease can expire while
+-- the radio is off, so the next SSID - the same name or not - is a new network that
+-- has to be configured again.
+local function forgetAppliedNetwork()
+    stopApplyRetry()
+    currentSSID = nil
+    applyTarget = nil
+    applyAttempts = 0
+end
+
 function M.performNetworkAudit()
     local status = core.getCurrentWiFiStatus()
     if not status.connected or not status.ssid then
         utils.log(i18n.t("log_wifi_sleep"))
-        -- Forget what was applied. The network that comes back is a new one as far as
-        -- this module is concerned even when it carries the same SSID: the lease can
-        -- have been lost with the association, and an address can have been dropped by
-        -- sleep, a VPN, or the step that failed before the link went down. Leaving the
-        -- name set would make the next watcher event for the same SSID compare equal
-        -- and return, so a reconnect would never be re-audited.
-        stopApplyRetry()
-        applyTarget = nil
-        applyAttempts = 0
-        currentSSID = nil
+
+        -- Nothing is applied and nothing is in flight, so there is no claim to
+        -- re-confirm and no reason to schedule anything.
+        if not currentSSID and not applyTarget then
+            cancelDisconnectCheck()
+            return
+        end
+
+        cancelDisconnectCheck()
+        local run = disconnectCheck
+        timer.doAfter(DISCONNECT_RECHECK_DELAY, function()
+            if run ~= disconnectCheck then return end
+
+            local again = core.getCurrentWiFiStatus()
+            if again.connected and again.ssid then
+                -- Back under a name within the re-check window: that reading was wrong,
+                -- not the network. A different name is still a real change and gets
+                -- applied; the same one is what the false reading used to break.
+                utils.log(i18n.t("log_wifi_flap_recovered", again.ssid))
+                if again.ssid ~= currentSSID and again.ssid ~= applyTarget then
+                    applyAttempts = 0
+                    runApplySequence(again.ssid)
+                end
+                return
+            end
+
+            utils.log(i18n.t("log_wifi_down_confirmed", tostring(currentSSID or applyTarget)))
+            forgetAppliedNetwork()
+        end)
         return
     end
+
+    cancelDisconnectCheck()
 
     local ssid = status.ssid
     if ssid == currentSSID then

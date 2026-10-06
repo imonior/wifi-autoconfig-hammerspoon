@@ -294,15 +294,6 @@ function M.applyNetworkStrategy(ssid, onSettled)
             return
         end
 
-        if core.interfaceMatchesPolicy(wifiInterface, setting) then
-            -- Nothing needs writing, so nothing gets announced either: the watcher
-            -- fires for a wake from sleep too, and reporting that as a change is the
-            -- popup that appears for no reason.
-            utils.log(i18n.t("log_apply_skip_unchanged", ssid))
-            settle(true)
-            return
-        end
-
         utils.log(i18n.t("log_apply_rule", ssid, setting.mode))
 
         M.applyConfigToInterface(wifiInterface, setting, function(problems)
@@ -317,11 +308,6 @@ function M.applyNetworkStrategy(ssid, onSettled)
             end)
         end, run)
     else
-        if core.interfaceMatchesPolicy(wifiInterface, nil) then
-            utils.log(i18n.t("log_apply_skip_unchanged", ssid))
-            settle(true)
-            return
-        end
         utils.log(i18n.t("log_no_config_fallback"))
         local ok, output = core.runWithSudo("/usr/sbin/networksetup -setdhcp " .. core.shellQuote(wifiInterface))
 
