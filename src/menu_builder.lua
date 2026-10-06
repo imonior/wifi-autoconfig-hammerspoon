@@ -167,10 +167,26 @@ function M.buildStatusRows(cache)
             if v.details and v.details.ip6 then
                 rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_label_ipv6") .. ": " .. v.details.ip6 }
             end
+            if v.route then
+                -- Only show the IPv6 gateway when the interface actually has an IPv6 address,
+                -- so the detail block mirrors whatever is listed above it.
+                local gw6 = v.route.gateway6
+                if gw6 and gw6 ~= "" and not gw6:match("^link#") and (v.details and v.details.ip6) then
+                    -- Strip the interface scope (fe80::%utun3 -> fe80::); the interface is already listed above.
+                    local gw6Text = gw6:gsub("%%%w+", "")
+                    local egress6 = (v.status == "Connected" and v.defaultEgress6) and (" (" .. i18n.t("menu_vpn_default_egress") .. ")") or ""
+                    rows[#rows + 1] = {
+                        kind = "muted",
+                        indent = 2,
+                        text = i18n.t("menu_label_gateway") .. " (IPv6): " .. gw6Text .. egress6
+                    }
+                end
+            end
             -- Which networks actually leave through this tunnel, one row per
-            -- address family. A full-tunnel VPN installs thousands of routes, so
-            -- each row lists a few and gives the count for its own family; a
-            -- family with no route of its own gets no row.
+            -- address family, listed after the addresses and gateways they route
+            -- to. A full-tunnel VPN installs thousands of routes, so each row
+            -- lists a few and gives the count for its own family; a family with
+            -- no route of its own gets no row.
             local route = v.routeNetworks
             if route then
                 for _, fam in ipairs({ {"v4", " (IPv4)"}, {"v6", " (IPv6)"} }) do
@@ -188,21 +204,6 @@ function M.buildStatusRows(cache)
                             text = i18n.t("menu_label_route") .. fam[2] .. ": " .. table.concat(shown, ", ") .. more
                         }
                     end
-                end
-            end
-            if v.route then
-                -- Only show the IPv6 gateway when the interface actually has an IPv6 address,
-                -- so the detail block mirrors whatever is listed above it.
-                local gw6 = v.route.gateway6
-                if gw6 and gw6 ~= "" and not gw6:match("^link#") and (v.details and v.details.ip6) then
-                    -- Strip the interface scope (fe80::%utun3 -> fe80::); the interface is already listed above.
-                    local gw6Text = gw6:gsub("%%%w+", "")
-                    local egress6 = (v.status == "Connected" and v.defaultEgress6) and (" (" .. i18n.t("menu_vpn_default_egress") .. ")") or ""
-                    rows[#rows + 1] = {
-                        kind = "muted",
-                        indent = 2,
-                        text = i18n.t("menu_label_gateway") .. " (IPv6): " .. gw6Text .. egress6
-                    }
                 end
             end
         end
