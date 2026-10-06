@@ -7,6 +7,12 @@ All notable changes to **Wi-Fi AutoConfig for Hammerspoon** are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.3] - 2026-10-07
+
+### Fixed
+
+- **The same network is no longer reconfigured, and re-announced, on every Wi-Fi event** — the watcher reports an association change when the Mac wakes as well as when it joins a different network, and the audit deliberately forgets which SSID it had confirmed, because a sleep can drop the lease and an address can be lost while the link is down. Re-auditing after such an event is right; running the whole command sequence again against a network that is still exactly as configured is not. It did: `networksetup -setmanual`, `-setv6off` and `-setdnsservers` were issued a second time, the wait for an address that was already there returned immediately, and the run ended with a notification plus a "Network Configuration Applied" popup for a change nobody had made — after each sleep, over and over. A policy is now compared with the interface before anything is written: the configuration mode, IPv4 address, subnet mask, router, the IPv6 mode and its address (prefix and router where `-getinfo` reports them), and the DNS servers set on the service, compared as a set so an unchanged list in a new order is still unchanged. A match settles the audit silently — no `sudo` call, no notification, no popup — and confirms the SSID so the retry budget stays unused. Skipping is only allowed for work the comparison can see is already done: output that cannot be read, a mode it does not recognise, a static address or DNS list that differs in any field, and a DHCP interface that has not been handed an address yet all count as differences, so a half-configured or broken network is still written and still reported. Only the IPv6 prefix and router are allowed to be absent on either side, since some macOS builds leave them out of `-getinfo` entirely and a hand-written policy may set the address without a router. Force detection goes through the same comparison; the editor's force apply still writes unconditionally, which is the way to push settings that are already in place.
+
 ## [3.2.2] - 2026-10-06
 
 ### Added

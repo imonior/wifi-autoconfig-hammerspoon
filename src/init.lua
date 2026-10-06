@@ -19,7 +19,7 @@ local M = {}
 
 -- Keep in step with MODULE_VERSION in scripts/install.sh, which is the value the
 -- release package name, the installer banner and the git tag are built from.
-M.VERSION = "3.2.2"
+M.VERSION = "3.2.3"
 
 -- The status list is drawn by panel.lua on its own dark surface. Set this to
 -- false to go back to the native hs.menubar menu: it keeps the system menu
