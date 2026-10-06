@@ -440,16 +440,38 @@ end
 
 -- Wires the menu bar item to the panel: opening rebuilds the model so the
 -- panel always shows live data, exactly like the dynamic NSMenu did.
+-- A second click on the icon within DOUBLE_CLICK_NS closes the panel and opens
+-- the settings editor instead, so the icon has both a quick look (one click)
+-- and a quick edit (two).
 -- Returns false when the panel could not be created, so the caller can fall
 -- back to the native menu instead of leaving the item dead.
-function M.attach(item, builder)
+local DOUBLE_CLICK_NS = 400000000 -- 0.4s
+
+function M.attach(item, builder, onDoubleClick)
     if not ensurePanel() then
         utils.log("panel: webview unavailable, keeping the native menu")
         return false
     end
 
     menuBarItemRef = item
+
+    -- hs.menubar's click callback reports only the modifier keys (see its docs for
+    -- 1.1.1), so a double-click has to be recognised from the gap between the two
+    -- callbacks rather than from an event click count.
+    local lastClickAt = 0
     item:setClickCallback(function()
+        local now = timer.absoluteTime()
+        local isDoubleClick = (now - lastClickAt) < DOUBLE_CLICK_NS
+        lastClickAt = now
+
+        if isDoubleClick then
+            -- Reset so a third click in a row is not read as another double-click.
+            lastClickAt = 0
+            if visible then M.hide() end
+            if onDoubleClick then onDoubleClick() end
+            return
+        end
+
         if visible then
             M.hide()
             return

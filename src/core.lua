@@ -806,8 +806,40 @@ local function getProxyVPNs(processList, existingVPNs, clashAppInfos, listeningM
     return proxyVPNs
 end
 
-local function parseDefaultRoutes(family)
-    local byInterface = {}
+-- Which routing-table rows are worth showing as "networks reachable through this
+-- tunnel". Skipped: loopback, multicast and broadcast, IPv6 link-local, and a route
+-- whose destination equals its gateway (that is the interface's own address, not a
+-- network it leads to).
+local function isNoiseRoute(dest, gateway)
+    local base = dest:match("^(.-)/%d+$") or dest
+    if base:match("^fe80") or base:match("^ff") then return true end
+    if base:match("^224%.") or base:match("^239%.") then return true end
+    if base == "255.255.255.255" then return true end
+    if base == "127" or base:match("^127%.") or base == "::1" then return true end
+    if gateway and dest == gateway then return true end
+    return false
+end
+
+-- `netstat -rn` abbreviates IPv4 networks ("10/8", "192.168.1/32"); expand them to
+-- full CIDR so the row is unambiguous. IPv6 is already printed in full form.
+local function normalizeRouteDest(dest)
+    local base, bits = dest:match("^(.-)/(%d+)$")
+    if not base or not bits or base:match(":") then return dest end
+    local octets = {}
+    for o in base:gmatch("%d+") do table.insert(octets, o) end
+    if #octets == 0 or #octets >= 4 then return dest end
+    while #octets < 4 do table.insert(octets, "0") end
+    return table.concat(octets, ".") .. "/" .. bits
+end
+
+-- Parses `netstat -rn -f <family>` once and returns two views of the same output:
+--   byGateway     - iface -> { gateway = <default-route gateway> }, default routes only
+--   byDestination - iface -> { destinations = { "<net>", ... }, count = N }, every
+--                   non-default network this interface carries (the routes a VPN
+--                   installs), minus the noise filtered above
+local function parseRoutes(family)
+    local byGateway = {}
+    local byDestination = {}
     local handle = io.popen("/usr/sbin/netstat -rn -f " .. family .. " 2>/dev/null")
     if handle then
         local result = handle:read("*a")
@@ -815,7 +847,8 @@ local function parseDefaultRoutes(family)
         for line in result:gmatch("[^\r\n]+") do
             local toks = {}
             for word in line:gmatch("%S+") do table.insert(toks, word) end
-            if toks[1] == "default" and toks[2] and #toks >= 3 then
+            local dest = toks[1]
+            if dest and dest ~= "Destination" and #toks >= 3 then
                 -- Netif position varies by macOS version (Refs/Use columns may be omitted),
                 -- so take the last token that looks like an interface name (en0, utun5, ...).
                 local iface = nil
@@ -826,15 +859,25 @@ local function parseDefaultRoutes(family)
                     end
                 end
                 if iface then
-                    byInterface[iface] = byInterface[iface] or {}
-                    if not byInterface[iface].gateway then
-                        byInterface[iface].gateway = toks[2]
+                    if dest == "default" then
+                        byGateway[iface] = byGateway[iface] or {}
+                        if not byGateway[iface].gateway then
+                            byGateway[iface].gateway = toks[2]
+                        end
+                    elseif not isNoiseRoute(dest, toks[2]) then
+                        byDestination[iface] = byDestination[iface] or { destinations = {}, count = 0 }
+                        byDestination[iface].count = byDestination[iface].count + 1
+                        -- Keep a handful of representative destinations; a full-tunnel VPN
+                        -- can install thousands, and the menu only wants a summary.
+                        if #byDestination[iface].destinations < 6 then
+                            table.insert(byDestination[iface].destinations, normalizeRouteDest(dest))
+                        end
                     end
                 end
             end
         end
     end
-    return byInterface
+    return byGateway, byDestination
 end
 
 -- utun tunnels install their default route with a link-layer gateway (link#N),
@@ -875,9 +918,13 @@ local function getDefaultRouteInterface(isIPv6)
 end
 
 local function getVPNRouteMap()
+    local v4gw, v4dest = parseRoutes("inet")
+    local v6gw, v6dest = parseRoutes("inet6")
     return {
-        v4 = parseDefaultRoutes("inet"),
-        v6 = parseDefaultRoutes("inet6"),
+        v4 = v4gw,
+        v6 = v6gw,
+        routes4 = v4dest,
+        routes6 = v6dest,
         peers = getInterfacePeerGateways(),
         defaultIface4 = getDefaultRouteInterface(false),
         defaultIface6 = getDefaultRouteInterface(true)
@@ -918,8 +965,30 @@ function M.getVPNInfo()
             end
             v.defaultEgress4 = (routeMap.defaultIface4 == v.interface)
             v.defaultEgress6 = (routeMap.defaultIface6 == v.interface)
+
+            -- Split-tunnel summary: how many networks this interface carries, plus a few
+            -- of them. netstat abbreviates IPv4 networks; both families are expanded by
+            -- normalizeRouteDest before they get here.
+            local nr4 = routeMap.routes4[v.interface]
+            local nr6 = routeMap.routes6[v.interface]
+            local total = (nr4 and nr4.count or 0) + (nr6 and nr6.count or 0)
+            if total > 0 then
+                local samples, seen = {}, {}
+                for _, list in ipairs({ (nr4 and nr4.destinations) or {}, (nr6 and nr6.destinations) or {} }) do
+                    for _, d in ipairs(list) do
+                        if not seen[d] then
+                            seen[d] = true
+                            samples[#samples + 1] = d
+                        end
+                    end
+                end
+                v.routeNetworks = { count = total, samples = samples }
+            else
+                v.routeNetworks = nil
+            end
         else
             v.route = nil
+            v.routeNetworks = nil
             v.defaultEgress4 = false
             v.defaultEgress6 = false
         end

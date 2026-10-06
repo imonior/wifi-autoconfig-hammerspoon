@@ -18,7 +18,7 @@ set -e
 GITHUB_USER="imonior"
 GITHUB_REPO="wifi-autoconfig-hammerspoon"
 GITHUB_BRANCH="main"
-MODULE_VERSION="3.2.1"
+MODULE_VERSION="3.2.2"
 
 # GitHub proxy support (for users in China)
 # Usage: GITHUB_PROXY=https://ghfast.top/ bash install.sh
@@ -684,15 +684,13 @@ detect_local_package() {
 # ============================================================================
 download_project() {
     TMP_DIR=$(mktemp -d)
-    local tarball_url ref archive_dir
+    local tarball_url ref tarball archive_root candidate
 
     # Default to the matching release tag; --branch overrides this.
     if [ "$GITHUB_BRANCH" = "main" ]; then
         ref="v${MODULE_VERSION}"
-        archive_dir="${GITHUB_REPO}-${ref}"
     else
         ref="refs/heads/${GITHUB_BRANCH}"
-        archive_dir="${GITHUB_REPO}-${GITHUB_BRANCH}"
     fi
 
     tarball_url=$(github_url "https://github.com/${GITHUB_USER}/${GITHUB_REPO}/archive/${ref}.tar.gz")
@@ -701,21 +699,50 @@ download_project() {
         info "Using proxy: $GITHUB_PROXY"
     fi
 
-    if ! curl -fsSL "$tarball_url" | tar xz -C "$TMP_DIR" 2>/dev/null; then
+    # The archive is downloaded to a file and checked before it is extracted: piped
+    # straight into tar, a curl that failed (404 on a tag that was never pushed, a
+    # proxy that answered with an HTML error page) would leave only tar's own
+    # complaint about the archive format to explain what went wrong.
+    tarball="$TMP_DIR/download.tar.gz"
+    if ! curl -fsSL --retry 2 -o "$tarball" "$tarball_url"; then
         error "Failed to download project files from GitHub."
         error "URL: $tarball_url"
         exit 1
     fi
 
-    SRC_DIR="$TMP_DIR/$archive_dir"
+    if [ ! -s "$tarball" ] || ! tar tzf "$tarball" >/dev/null 2>&1; then
+        error "Downloaded file is not a readable tar.gz archive."
+        error "URL: $tarball_url"
+        error "Size: $(wc -c < "$tarball" | tr -d ' ') bytes"
+        exit 1
+    fi
 
-    if [ ! -d "$SRC_DIR" ]; then
+    if ! tar xzf "$tarball" -C "$TMP_DIR"; then
+        error "Failed to extract the downloaded archive."
+        exit 1
+    fi
+    rm -f "$tarball"
+
+    # GitHub names the extracted directory after the ref, but a tag archive drops the
+    # leading "v" (tag v3.2.1 extracts to ${GITHUB_REPO}-3.2.1) while a branch archive
+    # keeps it (${GITHUB_REPO}-main), so the directory is looked up, not guessed.
+    archive_root=""
+    for candidate in "$TMP_DIR/${GITHUB_REPO}"*/; do
+        if [ -d "$candidate" ]; then
+            archive_root="${candidate%/}"
+            break
+        fi
+    done
+
+    if [ -z "$archive_root" ] || [ ! -f "$archive_root/scripts/install.sh" ]; then
         error "Downloaded archive structure unexpected."
         ls -la "$TMP_DIR"
         exit 1
     fi
 
-    info "Project files downloaded."
+    SRC_DIR="$archive_root"
+
+    info "Project files downloaded ($(basename "$SRC_DIR"))."
 }
 
 # ============================================================================

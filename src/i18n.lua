@@ -142,6 +142,8 @@ local locales = {
         menu_label_ipv6 = "IPv6",
         menu_label_prefix = "前缀",
         menu_label_dns = "DNS",
+        menu_label_route = "路由",
+        menu_vpn_routes_more = "共 %d 条",
 
         label_ssid = "📶 SSID",
         label_config_source = "🔧 配置来源",
@@ -322,6 +324,8 @@ local locales = {
         menu_label_ipv6 = "IPv6",
         menu_label_prefix = "Prefix",
         menu_label_dns = "DNS",
+        menu_label_route = "Route",
+        menu_vpn_routes_more = "%d total",
 
         label_ssid = "📶 SSID",
         label_config_source = "🔧 Source",

@@ -19,7 +19,7 @@ local M = {}
 
 -- Keep in step with MODULE_VERSION in scripts/install.sh, which is the value the
 -- release package name, the installer banner and the git tag are built from.
-M.VERSION = "3.2.1"
+M.VERSION = "3.2.2"
 
 -- The status list is drawn by panel.lua on its own dark surface. Set this to
 -- false to go back to the native hs.menubar menu: it keeps the system menu
@@ -313,6 +313,18 @@ local function forceRedetect()
     M.performNetworkAudit()
 end
 
+-- Opening the editor is one action shared by three entry points: the panel's
+-- "Open Settings" row, the native menu item, the double-click on the icon, and
+-- the URL scheme. If it is already open, refresh it rather than spawning a
+-- second window over the first.
+local function openSettings()
+    if ui.editorView then
+        ui.refreshEditor()
+    else
+        ui.showEditor(config.current)
+    end
+end
+
 -- Row model for the self-drawn panel: the status rows come from the shared
 -- builder, then the four commands are appended as the interactive section.
 local function buildPanelModel()
@@ -336,7 +348,7 @@ local function buildPanelModel()
     return {
         rows = rows,
         actions = {
-            settings = function() ui.showEditor(config.current) end,
+            settings = openSettings,
             logs = function()
                 local f = io.open(logFilePath, "r")
                 local content = ""
@@ -365,7 +377,7 @@ local function buildMenuBar()
             M.menuBarItem:setTitle("📶")
         end
         
-        local panelReady = USE_PANEL_MENU and panel.attach(M.menuBarItem, buildPanelModel)
+        local panelReady = USE_PANEL_MENU and panel.attach(M.menuBarItem, buildPanelModel, openSettings)
 
         if panelReady then
             -- The self-drawn panel owns the item; there is no NSMenu to build.
@@ -386,7 +398,7 @@ local function buildMenuBar()
             
                 table.insert(menuItems, { 
                     title = styledtext.new("⚙️ " .. i18n.t("menu_open_settings"), { font = { size = 12 } }),
-                    fn = function() ui.showEditor(config.current) end
+                    fn = openSettings
                 })
                 table.insert(menuItems, { 
                     title = styledtext.new("📋 " .. i18n.t("menu_view_logs"), { font = { size = 12 } }),
@@ -419,13 +431,7 @@ function M.init()
     config.read()
     
     config.registerURLSchemes(
-        function() 
-            if ui.editorView then 
-                ui.refreshEditor() 
-            else 
-                ui.showEditor(config.current) 
-            end 
-        end,
+        openSettings,
         handleForceApply,
         function()
             ui.syncHardwareStatusToUI()

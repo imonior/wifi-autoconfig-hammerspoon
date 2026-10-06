@@ -7,6 +7,18 @@ All notable changes to **Wi-Fi AutoConfig for Hammerspoon** are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.2] - 2026-10-06
+
+### Added
+
+- **Double-clicking the menu-bar icon opens the settings editor** — one click still shows the status panel, and a second click on the icon within 0.4s brings the panel down and opens the editor. The pair is recognised from the gap between the two click callbacks rather than from a system click count, because `hs.menubar` hands its callback only the modifier keys (1.1.1 docs), and the counter is reset on a recognised pair so a third click in a row is not read as another double-click. This needs the self-drawn panel: the native-menu fallback path (taken only when the WebKit panel cannot be created) has no click callback to intercept, so there a double-click just opens and closes the menu. Opening the editor is now a single function shared by the panel row, the native menu item, the double-click and the URL scheme, so an editor that is already open is refreshed instead of a second window stacking over the first.
+- **VPN route summary** — each detected tunnel or VPN now lists how many networks it has installed in the routing table, with up to three of them as examples (`Route: 10.0.0.0/8, 192.168.0.0/16 (137 total)`). This is the row that tells a split-tunnel VPN apart from a full-tunnel one, and the one that explains "the VPN says connected, yet this site still goes out the WAN": the gateway says where packets handed to the interface are sent, the DNS row says only how names are resolved, and neither says which destinations take the tunnel at all. The count comes from `netstat -rn -f inet` and `-f inet6`, now parsed once per family for both views, with netstat's abbreviated IPv4 networks (`10/8`) expanded to full CIDR and the rows that are not networks filtered out: loopback, multicast and broadcast, IPv6 link-local, and any destination equal to its own gateway, which is the interface's address rather than a network it leads to. A full-tunnel VPN can install thousands of routes, so only a handful are kept and the total is shown. A tunnel carrying no such route shows no route row instead of an empty one.
+
+### Fixed
+
+- **A fresh online install aborted instead of installing** — the installer downloads the archive of the matching release tag (introduced with 3.2.1) and then looked for the extracted directory under the guessed name `wifi-autoconfig-hammerspoon-v3.2.2`, but GitHub's archives drop the leading `v` from a tag (`wifi-autoconfig-hammerspoon-3.2.2`) while a branch archive keeps the ref it was named after (`…-main`). Nothing matched the guess, so every `curl | bash` install against the tag ended with "Downloaded archive structure unexpected" and installed nothing. It broke updates exactly as it broke fresh installs, since both fetch the same archive; the offline bundle and a run from a local checkout are picked up before any download happens, which is why the failure stayed out of sight. The directory is now discovered from what the archive really produced, and is accepted only if it contains `scripts/install.sh`.
+- **A failed download is now reported as a failed download** — the bytes were piped straight from `curl` into `tar`, so a proxy page or a 404 body arriving as HTML surfaced as a generic tar error with no way to tell which end broke. The archive is downloaded to a file (with two retries), checked as a readable gzip member with `tar tzf` before anything is extracted, and each stage names its own failure along with the URL used.
+
 ## [3.2.1] - 2026-10-03
 
 ### Fixed
