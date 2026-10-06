@@ -309,10 +309,10 @@ wifi-autoconfig-hammerspoon/
 
 **切换网络后什么都没变**：模块通过 `sudo /usr/sbin/networksetup` 修改网络设置，而 `io.popen` 不会给 sudo 分配终端，所以缺少 sudoers 规则时并不会弹出密码框——命令直接失败，结果弹窗会列出未完成的步骤。安装时安装器可在 `/etc/sudoers.d/hammerspoon_wificonfig` 为**当前账户单独**写入免密规则，刻意不放行给 `%admin`：任何本机进程都能以该管理员身份免密执行 `-setdnsservers`，这是一条比本模块活得更久的 DNS 劫持通道。规则只点名模块用到的子命令（`setmanual`、`setdhcp`、`setdnsservers`、`setv6manual`、`setv6automatic`、`setv6off`、`listallnetworkservices`），而不是放行整个二进制；卸载时 `scripts/uninstall.sh` 会删除它写下的文件。规则文件先写到临时路径，用 `visudo -cf` 校验通过之后才移入原位，因此一次失败的校验不会在 `/etc/sudoers.d` 留下破损的 drop-in；安装器随后还会用免密探测确认这条规则对你的账户确实生效，才报告成功。写入之前它会先征求你的同意；没有终端可供提问时（管道执行的 `curl | bash`）它拒绝写入这条规则，只打印你自己添加时要用到的命令——一份长期有效的授权不该因为没人应答就被创建。
 
-若要自己添加，运行 `sudo visudo -f /etc/sudoers.d/hammerspoon_wificonfig`，把下面这行中的 `<your-user>` 换成你的账户名后加入，并用 `sudo visudo -cf /etc/sudoers.d/hammerspoon_wificonfig` 校验语法：
+若要自己添加，运行 `sudo visudo -f /etc/sudoers.d/hammerspoon_wificonfig`，把下面这行中的 `<your-user>` 换成你的账户名后加入，并用 `sudo visudo -cf /etc/sudoers.d/hammerspoon_wificonfig` 校验语法。请注意最后一项与其他项不同，它后面没有 `*`：sudoers 的 `*` 匹配的是参数，而不是「参数的缺失」，所以写成 `-listallnetworkservices *` 会让安装器用来探测的那个不带参数的调用被拒绝（3.2.1 装出的规则正是这个形态——切换网络照常工作，只有探测报称失败）。
 
 ```
-<your-user> ALL=(root) NOPASSWD: /usr/sbin/networksetup -setmanual *, /usr/sbin/networksetup -setdhcp *, /usr/sbin/networksetup -setdnsservers *, /usr/sbin/networksetup -setv6manual *, /usr/sbin/networksetup -setv6automatic *, /usr/sbin/networksetup -setv6off *, /usr/sbin/networksetup -listallnetworkservices *
+<your-user> ALL=(root) NOPASSWD: /usr/sbin/networksetup -setmanual *, /usr/sbin/networksetup -setdhcp *, /usr/sbin/networksetup -setdnsservers *, /usr/sbin/networksetup -setv6manual *, /usr/sbin/networksetup -setv6automatic *, /usr/sbin/networksetup -setv6off *, /usr/sbin/networksetup -listallnetworkservices
 ```
 
 早期版本可能把规则写在 `/etc/sudoers.d/hammerspoon_netconfig` 或 `/etc/sudoers.d/hammerspoon_network`，而 v3.1.0 放行的是整个二进制而非逐条子命令。安装器会查找任何提到 `networksetup` 的 drop-in，打印其完整内容，说明它是否比当前规则更宽（授予了 `%admin` 这类用户组，或没有指定子命令而就放行了整个二进制），并列出它缺少哪些必需子命令。sudo 把多条规则视为可选项的叠加，所以只要那条宽规则还在，无论新文件写得多窄都约束不住权限——因此安装器在新规则验证通过之后，会删除**它自己写下的**遗留文件（凭文件里的标记行识别）。不是它写的文件绝不会被删：内容会打印出来，并告诉你用 `visudo -f` 自行查看。正因为这条遗留规则无论如何都仍然有效，即使某个未标记的宽规则已经让免密探测通过，安装器依然会收窄它自己管理的那份（`hammerspoon_wificonfig`），并且只在确认新授权生效之后才动旧文件；如果你在存在过宽规则时拒绝了添加规则，脚本会明确说明本次没有写入任何东西、更宽的权限仍在生效。对于没有密码就读不到的 drop-in，脚本只报告「无法判断」而不是猜。
