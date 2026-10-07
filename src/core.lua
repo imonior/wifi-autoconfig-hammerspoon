@@ -305,6 +305,103 @@ function M.getActiveDNS()
     return #dnsList > 0 and table.concat(dnsList, ", ") or i18n.t("dns_empty")
 end
 
+-- The address a peer sees for this machine, read twice because an enabled system proxy
+-- replaces the answer: the same request then leaves through that proxy's exit, so the
+-- direct address and the address your traffic actually appears from are two different
+-- facts worth having side by side. Only an HTTP or HTTPS proxy set on the service can be
+-- read here; a PAC-only setup reports no proxy and the direct address is the whole story.
+--
+-- Every one of these requests leaves the machine, so the budget stays small: the first
+-- endpoint that answers wins and the rest are never tried, and a dead or hijacked path
+-- costs about a second per endpoint rather than hanging the Lua thread.
+--
+-- The list is ordered by how likely it is to answer where this module runs. Measured on
+-- the development machine: the three well-known echo services were all unreachable while
+-- the machine had working Internet - their names resolve into the 198.18.0.0/15 range a
+-- TUN-mode proxy hands out for fake-IP, and with no proxy listening the requests just run
+-- down their timeout - while ip.3322.net answered in 0.7s with a bare address. A chain
+-- made only of foreign services therefore reads "failed" on a machine that is plainly
+-- online, which is the one case this row exists to make visible.
+local EGRESS_ENDPOINTS = {
+    "https://api.ipify.org",
+    "https://ip.3322.net/",
+    "https://ifconfig.co/ip",
+    "https://ip.sb/ip",
+}
+
+local function isIPv4(value)
+    local octets = {}
+    for octet in value:gmatch("%d+") do octets[#octets + 1] = tonumber(octet) end
+    if #octets ~= 4 then return false end
+    for _, octet in ipairs(octets) do
+        if octet > 255 then return false end
+    end
+    return true
+end
+
+local function asAddress(text)
+    local value = text and text:match("^%s*(.-)%s*$")
+    if not value or value == "" or #value > 45 then return nil end
+    if value:match("^%d+%.%d+%.%d+%.%d+$") and isIPv4(value) then return value end
+    -- An IPv6 literal needs at least two colons. Anything else a service might hand back -
+    -- an error page, a hostname, a JSON body - has no place in this row.
+    if value:match("^[%x:]+$") and select(2, value:gsub(":", "")) >= 2 then return value end
+    return nil
+end
+
+local function probeEgress(proxyURL)
+    for _, endpoint in ipairs(EGRESS_ENDPOINTS) do
+        -- --noproxy is what makes the direct reading mean "this interface's own address":
+        -- curl would otherwise pick up proxy variables from the environment.
+        local via = proxyURL and ("--proxy " .. shellQuote(proxyURL)) or "--noproxy '*'"
+        local handle = io.popen("/usr/bin/curl -s --connect-timeout 0.5 --max-time 1 " ..
+            via .. " " .. shellQuote(endpoint) .. " 2>/dev/null")
+        if handle then
+            local result = handle:read("*a")
+            handle:close()
+            local address = asAddress(result)
+            if address then return address end
+        end
+    end
+    return nil
+end
+
+M.getEgressIP = probeEgress
+
+local function proxyField(result, name)
+    for line in result:gmatch("[^\r\n]+") do
+        -- Anchored at the line start on purpose: the same output carries
+        -- "Authenticated Proxy Enabled: 0", which is not whether the proxy is in use.
+        local value = line:match("^%s*" .. name .. ":%s*(.-)%s*$")
+        if value then return value end
+    end
+    return nil
+end
+
+local function usablePort(text)
+    return text ~= nil and tonumber(text) ~= nil and tonumber(text) > 0
+end
+
+function M.getSystemProxyURL(wifiInterface)
+    for _, query in ipairs({ "-getwebproxy", "-getsecurewebproxy" }) do
+        local handle = io.popen("/usr/sbin/networksetup " .. query .. " " ..
+            shellQuote(wifiInterface) .. " 2>/dev/null")
+        if handle then
+            local result = handle:read("*a")
+            handle:close()
+            -- networksetup reports "Port: 0" for a service with no proxy set, which is the
+            -- same answer as an enabled entry that was never completed; neither is somewhere
+            -- a request can be sent.
+            local server, port = proxyField(result, "Server"), proxyField(result, "Port")
+            if proxyField(result, "Enabled") == "Yes" and server and server ~= ""
+                and usablePort(port) then
+                return "http://" .. server .. ":" .. port
+            end
+        end
+    end
+    return nil
+end
+
 function M.setDNSServers(wifiInterface, dns)
     if dns and dns:match("%S") then
         local dnsList = {}

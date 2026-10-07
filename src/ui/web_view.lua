@@ -218,7 +218,21 @@ function M.showPopup(mode, title, contentPayload)
         end
 
         if popup.windowStyle then popup:windowStyle({"titled", "closable", "resizable"}) end
+
+        -- Keyboard access, and the moment it is granted. The window underneath can only
+        -- become the key window while text entry is allowed (its canBecomeKeyWindow returns
+        -- exactly that flag), and a window that never becomes key receives no keyboard
+        -- input at all, so Cmd+A / Cmd+C reach nothing in it.
+        -- The log window is opened on purpose to be read from and copied out of, so it is
+        -- given this before it is shown and takes the keyboard as it appears. A result
+        -- notice appears on its own and must not pull the keyboard out of whatever the
+        -- user is doing, so it only gets the same permission once it is on screen; a click
+        -- into it then makes the text selectable and copyable like any other window's.
+        if mode == "log" then popup:allowTextEntry(true) end
+
         popup:show()
+
+        if mode ~= "log" then popup:allowTextEntry(true) end
         
         utils.log(i18n.t("log_show_popup", tostring(title)))
     end

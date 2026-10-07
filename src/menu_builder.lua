@@ -80,6 +80,15 @@ local function vpnStatusText(status)
     return i18n.t("menu_status_disconnected")
 end
 
+-- The egress rows show whatever the probe timer last wrote, so the two states before an
+-- address exists have to be told apart: no probe yet is normal (the panel must open
+-- instantly and never wait on one), while a probe that ran and got nothing is the failure.
+local function egressValueText(address, probed)
+    if address and address ~= "" then return address end
+    if probed then return i18n.t("menu_egress_failed") end
+    return i18n.t("menu_egress_pending")
+end
+
 -- The row model is the single source of truth for what the status menu shows.
 -- Two renderers consume it:
 --   * panel.lua turns it into the self-drawn WebKit panel (the default UI),
@@ -93,6 +102,7 @@ function M.buildStatusRows(cache)
     local v4mode = cache.ipv4.mode
     local v6mode, v6ip, v6prefix, v6gw = cache.ipv6.mode, cache.ipv6.ip, cache.ipv6.prefix, cache.ipv6.gw
     local activeDns = cache.dns
+    local egress = cache.egress or {}
     local vpnInfo = cache.vpnInfo or {}
 
     local wifiStatusText
@@ -132,6 +142,26 @@ function M.buildStatusRows(cache)
             end
         end
         rows[#rows + 1] = { kind = "kv", indent = 1, label = i18n.t("menu_label_dns") .. ":", value = tostring(activeDns) }
+
+        -- The address a peer sees, taken from the cache: the panel never waits on a probe.
+        -- These two rows are the last of the current-Wi-Fi block - below DNS, above the
+        -- VPN / virtual-NIC section - because they belong to the network below them.
+        rows[#rows + 1] = {
+            kind = "kv",
+            indent = 1,
+            label = i18n.t("menu_label_public_ip") .. ":",
+            value = egressValueText(egress.direct, egress.probed)
+        }
+        -- Only while a system proxy is actually enabled, which is the one case where the
+        -- address your traffic appears from is not the direct one.
+        if egress.proxyURL then
+            rows[#rows + 1] = {
+                kind = "kv",
+                indent = 1,
+                label = i18n.t("menu_label_proxy_egress_ip") .. ":",
+                value = egressValueText(egress.viaProxy, egress.probed)
+            }
+        end
     end
 
     if #vpnInfo > 0 then

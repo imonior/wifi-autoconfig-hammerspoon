@@ -7,6 +7,18 @@ All notable changes to **Wi-Fi AutoConfig for Hammerspoon** are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.5] - 2026-10-07
+
+### Added
+
+- **The status menu now ends with the address the Internet sees** — two rows below `DNS`, at the end of the current-network block: `Public IP`, the address a peer sees for this machine, and `Proxy Egress IP`, the address your traffic appears from while an HTTP or HTTPS proxy is enabled on the Wi-Fi service — the second row exists only when one is, since that is the only case where the two differ. They are the one part of the status list that has to leave the machine to be known, so they are read on a 2-minute timer instead of the 5-second local refresh, plus one pass a few seconds after the network changes, deferred while an apply sequence is still writing; opening the panel shows the last answer at once and waits for nothing. Before the first probe answers the row reads `Checking…`, and if no endpoint answered it reads `Unavailable` while the rest of the menu stays intact. The address comes from whichever of `api.ipify.org`, `ip.3322.net`, `ifconfig.co`, `ip.sb` answers first, with the others left alone and each request capped at about a second, so a blocked or hijacked path costs a slow refresh rather than a frozen menu. The order is not alphabetical but practical: on the development machine the well-known echo services resolved into the fake-IP range a TUN-mode proxy hands out and timed out while the machine went on browsing the web, and `ip.3322.net` answered in 0.7s. A setup that only points at a PAC file is not detected, because it is not a proxy setting on the service.
+
+- **Editor keyboard shortcuts** — ⌘S saves the selected policy and ⌘W closes the editor, both through the same functions the visible buttons call. They are handled in the page itself, so they need no system permission; the Accessibility note in the requirements concerns the status panel's click-outside tap, not these keys.
+
+### Fixed
+
+- **The log window can be selected and copied like any other text window** — `⌘A` and `⌘C` did nothing there. The window behind it can only become the key window while the webview allows text entry (its `canBecomeKeyWindow` returns exactly that flag), and a window that never becomes key receives no keyboard input at all, so WebKit's own select-all and copy never ran; the settings editor has always allowed text entry, which is why typing into its fields worked while the log window ignored the keyboard. The log viewer now allows it — being read from and copied out of is what it is for. The transient result popups allow it as well, but only once they are on screen: they appear on their own to report an apply and must not take the keyboard on the way in, and a click into one makes its text selectable and copyable from then on.
+
 ## [3.2.4] - 2026-10-07
 
 ### Fixed

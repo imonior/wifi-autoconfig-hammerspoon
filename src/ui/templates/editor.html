@@ -736,6 +736,23 @@ ${t('dns_servers')}: ${dns || t('system_auto')}`;
         setLocale(lang);
         applyI18n();
     }
+
+    // ---- keyboard shortcuts ----
+    // ⌘S and ⌘W are handled here, in the page, and go through the same functions the
+    // buttons call. No system permission takes part: the window is created with text
+    // entry allowed, which is what lets it become key and deliver these keys at all.
+    document.addEventListener('keydown', function (ev) {
+        if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey) { return; }
+        const key = (ev.key || '').toLowerCase();
+        if (key === 's') {
+            ev.preventDefault();
+            saveConfig();
+        } else if (key === 'w') {
+            ev.preventDefault();
+            closeWindow();
+        }
+    });
+    // ---- end keyboard shortcuts ----
 </script>
 </body>
 </html>

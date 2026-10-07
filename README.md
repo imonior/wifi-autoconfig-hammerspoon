@@ -17,6 +17,7 @@ Automatically switches network configurations (static IP / DHCP / custom DNS / I
 - **WebView configuration editor** — Built-in HTML/CSS UI for managing network profiles with live hardware status sync
 - **Menu bar integration** — Quick access to settings, logs, DHCP reset, and force re-detection; double-clicking the icon opens the settings editor
 - **VPN route summary** — each tunnel or VPN lists, in one row per address family, how many networks it has installed in the routing table (and a few of them), separate from its gateway and DNS, so a split-tunnel VPN is visibly different from a full-tunnel one
+- **Public and proxy egress address** — the status list closes with the address the Internet sees for this machine, plus the proxy's exit address while an HTTP/HTTPS proxy is enabled, so the interface's private address and the address traffic actually appears from are both visible; refreshed in the background every 2 minutes, never on the path that opens the menu
 - **Self-drawn status panel** — the menu-bar status view is a custom borderless WebKit panel with a fixed dark surface, so the amber/green section colours stay readable in both light and dark mode and informational rows never highlight on hover (falls back to the native menu automatically)
 - **Honest results** — The status of every `networksetup` call is collected; if a step fails (no passwordless sudo rule, for instance) the popup lists what did not complete instead of reporting success
 - **Bilingual (zh/en)** — Auto-detects system language via `hs.host.locale`
@@ -213,8 +214,8 @@ A reading that reports no network is not taken at face value. `hs.wifi.currentNe
 
 | Menu item | Action |
 |-----------|--------|
-| Open Settings | Opens the WebView configuration editor |
-| View Logs | Shows recent log entries in a popup |
+| Open Settings | Opens the WebView configuration editor (⌘S saves, ⌘W closes) |
+| View Logs | Shows recent log entries in a popup (select and copy with the mouse, `⌘A`, `⌘C`) |
 | Set Current Network to DHCP | Immediately resets current interface to DHCP + auto DNS |
 | Force Network Detection | Clears the remembered SSID and re-runs the network audit immediately, so the rule for the network you are on is written again and reported |
 
@@ -231,6 +232,23 @@ Each detected tunnel or VPN reports three different things, and they are not int
 | `DNS` | The resolver the interface is configured with | How a name becomes an address; it says nothing about which path the traffic then takes |
 
 So a VPN that takes over everything has a default route and a very large `Route` count, while a split-tunnel VPN shows only its own address ranges — the `Route` rows are what tell those two apart, and it is also what explains a "the VPN is connected but this site still goes out the WAN" case. The `Default egress` marker next to an address means that interface currently holds the system default route.
+
+### Reading the public address rows
+
+The last rows of the current-network block say where your machine appears from on the Internet:
+
+| Row | What it is |
+|-----|------------|
+| `Public IP` | The address a peer sees for this machine, read from the Wi-Fi interface's own path |
+| `Proxy Egress IP` | The address your traffic appears from when it goes through a proxy. Shown only while an HTTP or HTTPS proxy is enabled on the Wi-Fi service, because that is the one case where the two answers differ |
+
+Both are the last rows of the block, under `DNS`, and they say something the rows above them cannot: the interface address is private, and a tunnel can quietly take over the path. If a VPN holds the default route, the `Public IP` row is that tunnel's exit address, not your router's.
+
+Three things about how they are filled in:
+
+- **The panel never waits for them.** This is the only status data that has to leave the machine, so it is read on its own 2-minute timer instead of on the 5-second local refresh, and again a few seconds after the network changes (the re-probe waits for an apply sequence to finish writing, since a blocking read there would come out of the window that verifies the apply). Until the first probe answers, the row says `Checking…`; if no endpoint answers it says `Unavailable`, and the rest of the menu is unaffected.
+- **Four services, first answer wins.** The address comes from an HTTPS request to `api.ipify.org`, then `ip.3322.net`, then `ifconfig.co`, then `ip.sb`; as soon as one of them replies, the others are not contacted. The order matters on a Chinese network, where the well-known echo services may resolve into the fake-IP range a TUN-mode proxy hands out and then time out while the machine is plainly online — `ip.3322.net` answers there in under a second. Each request is capped at about a second, so a dead or hijacked path costs a slow refresh rather than a frozen menu. If you would rather not have the module reach these hosts at all, block them in your firewall — the rows then simply read `Unavailable`.
+- **A PAC-only proxy is not detected.** `Proxy Egress IP` reads the proxy set on the service (`networksetup -getwebproxy` / `-getsecurewebproxy`); a setup that only points at a PAC file has no such entry, so it shows the direct address alone.
 
 ## Configuration
 
@@ -318,7 +336,7 @@ Network changes are driven by timers: the apply sequence waits on `hs.timer` pol
 
 - macOS 13+ (tested on macOS 15 Sequoia)
 - Hammerspoon 0.4.3+
-- **Accessibility / Input Monitoring permission** — The module uses `hs.eventtap` to detect when the WebView configuration editor is focused, so that keyboard shortcuts (⌘S to save, ⌘W to close) work reliably. Without this permission, the editor will still open but those shortcuts won't respond. Grant access in **System Settings → Privacy & Security → Accessibility** or **Input Monitoring**, then reload Hammerspoon.
+- **Accessibility / Input Monitoring permission** — The module uses `hs.eventtap` to notice a mouse click outside the status panel, which is how the panel is dismissed. Grant access in **System Settings → Privacy & Security → Accessibility** or **Input Monitoring**, then reload Hammerspoon. The keyboard shortcuts are not part of this: the editor's ⌘S (save) and ⌘W (close), and the select-and-copy support in the log window and result popups, are handled by the pages themselves and need no system permission.
 - Sudo access for `networksetup`. The installer can write a passwordless sudoers rule for **your account only**; without it, network changes fail instead of prompting (see Troubleshooting).
 
 ## Troubleshooting

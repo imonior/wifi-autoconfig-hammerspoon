@@ -19,7 +19,7 @@ local M = {}
 
 -- Keep in step with MODULE_VERSION in scripts/install.sh, which is the value the
 -- release package name, the installer banner and the git tag are built from.
-M.VERSION = "3.2.4"
+M.VERSION = "3.2.5"
 
 -- The status list is drawn by panel.lua on its own dark surface. Set this to
 -- false to go back to the native hs.menubar menu: it keeps the system menu
@@ -50,6 +50,22 @@ M.wifiWatcher = nil
 local STATUS_CACHE_TTL = 5
 local cacheTimestamp = 0
 
+-- The address this machine appears from is the one fact in the status list that has to
+-- leave the network to be known, so it is not read on the 5-second tick: that loop must
+-- stay local-only, otherwise every refresh would pay for a round trip to an external
+-- service. The probe runs on its own timer instead, and the table below is the handoff -
+-- it is shared with the status cache by reference, so the panel shows the last known
+-- answer immediately and never waits on a request.
+local EGRESS_REFRESH_TTL = 120
+local EGRESS_PROBE_DELAY = 2
+
+local egressInfo = {
+    probed = false,
+    direct = nil,
+    viaProxy = nil,
+    proxyURL = nil
+}
+
 local cachedNetworkStatus = {
     wifiStatus = nil,
     wifiInterface = nil,
@@ -57,8 +73,92 @@ local cachedNetworkStatus = {
     ipv6 = { mode = nil, ip = nil, prefix = nil, gw = nil },
     dns = nil,
     vpnInfo = nil,
-    isDarkMode = nil
+    isDarkMode = nil,
+    egress = egressInfo
 }
+
+local egressTimer = nil
+local egressProbeTimer = nil
+
+-- True while an apply sequence is actively writing to the interface. Its retry waits are
+-- not included on purpose: waiting for a retry means the interface is idle and associated,
+-- which is exactly when an address can be read.
+local function applyInFlight()
+    return applyTarget ~= nil and applyRetryTimer == nil
+end
+
+local function refreshEgressInfo()
+    -- An apply sequence owns the thread for its own timer-driven steps, and the address is
+    -- worth nothing while the interface it describes is still being configured: a blocking
+    -- read here would eat into the verification windows that decide whether this network
+    -- gets reported as applied.
+    if applyInFlight() then return end
+
+    -- Nothing to probe without an association, and this is also the expensive case: every
+    -- endpoint would have to run down its timeout before the probe gives up. The rows are
+    -- only drawn for a connected network anyway, so the stale address is dropped with it.
+    if not wifi.currentNetwork() then
+        egressInfo.probed = false
+        egressInfo.direct = nil
+        egressInfo.viaProxy = nil
+        egressInfo.proxyURL = nil
+        return
+    end
+
+    local wifiInterface = core.getWiFiServiceName()
+    local proxyURL = wifiInterface and core.getSystemProxyURL(wifiInterface) or nil
+
+    local direct = core.getEgressIP(nil)
+    -- A proxy exit is only a different fact when a system proxy is enabled; without one
+    -- the second probe would return the direct address again and cost another request.
+    local viaProxy = proxyURL and core.getEgressIP(proxyURL) or nil
+
+    local changed = egressInfo.direct ~= direct or egressInfo.viaProxy ~= viaProxy or
+        egressInfo.proxyURL ~= proxyURL
+    egressInfo.probed = true
+    egressInfo.direct = direct
+    egressInfo.viaProxy = viaProxy
+    egressInfo.proxyURL = proxyURL
+
+    -- Quiet unless something actually moved: a probe every two minutes would otherwise
+    -- bury the rest of the log.
+    if changed and egressInfo.direct then
+        utils.log(i18n.t("log_egress_changed", direct, viaProxy or "-"))
+    end
+end
+
+-- Asks for one probe `EGRESS_PROBE_DELAY` seconds from now, for the moments where the
+-- cached answer is known to be stale: the module just loaded, or the interface just
+-- changed. This is a separate handle from the periodic timer, so a re-probe reschedules
+-- itself without disturbing the standing refresh.
+local function probeEgressSoon()
+    if egressProbeTimer then
+        pcall(function() egressProbeTimer:stop() end)
+    end
+    egressProbeTimer = timer.doAfter(EGRESS_PROBE_DELAY, function()
+        egressProbeTimer = nil
+        -- The two moments that ask for a probe are also the two that start a sequence, so
+        -- waiting it out is the common case rather than the exception. The sequence clears
+        -- its claim when it finishes, gives up, or settles into a retry wait, and this keeps
+        -- asking until one of those happens.
+        if applyInFlight() then return probeEgressSoon() end
+        refreshEgressInfo()
+    end)
+end
+
+local function startEgressTimer()
+    if egressTimer then
+        pcall(function() egressTimer:stop() end)
+    end
+    egressTimer = timer.doEvery(EGRESS_REFRESH_TTL, refreshEgressInfo)
+end
+
+local function stopEgressTimers()
+    for _, handle in ipairs({ egressTimer, egressProbeTimer }) do
+        if handle then pcall(function() handle:stop() end) end
+    end
+    egressTimer, egressProbeTimer = nil, nil
+end
 
 local function isCacheFresh()
     return cacheTimestamp > 0 and (os.time() - cacheTimestamp) < STATUS_CACHE_TTL
@@ -70,6 +170,9 @@ local function invalidateStatusCache()
     -- network change is exactly when they may be wrong (renamed service,
     -- external dongle attached). Drop them too so the next read re-resolves.
     core.invalidateInterfaceCache()
+    -- Same reason for the egress address: a new network means a new route out, and the
+    -- cached value now describes the path that was just replaced.
+    probeEgressSoon()
 end
 
 local function stopApplyRetry()
@@ -509,6 +612,11 @@ function M.init()
         refreshNetworkStatusCache(true)
     end)
 
+    -- The first probe waits out the load-time apply sequence rather than running inside
+    -- it, and then repeats on its own interval.
+    probeEgressSoon()
+    startEgressTimer()
+
     timer.doAfter(2, function()
         ui.syncHardwareStatusToUI()
     end)
@@ -518,6 +626,7 @@ function M.init()
     -- accumulate stale taps/timers from the previous module instance.
     hs.shutdownCallback = function()
         pcall(function() if M.statusTimer then M.statusTimer:stop() end end)
+        stopEgressTimers()
         stopApplyRetry()
         pcall(panel.hide)
         pcall(panel.destroy)
