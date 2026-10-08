@@ -148,12 +148,27 @@ function M.blockAlertOnce(title, message, button1, button2)
     return choice
 end
 
+-- One-shot timers that are not referenced anywhere get collected. A timer object is
+-- ordinary userdata: the only thing keeping it alive is the value hs.timer.doAfter returns,
+-- and this function used to drop it, so a scheduled report could simply never arrive - the
+-- callback and its closure are reachable only through the timer, and nothing complains when
+-- a timer does not fire. Hold each one until it has run.
+local pendingWaits = {}
+
 function M.wait(seconds, callback)
     if not callback then
         M.log(i18n.t("log_wait_no_callback"))
         return
     end
-    timer.doAfter(seconds, callback)
+    local holder = {}
+    -- Registered before the call and keyed on the holder rather than on the timer: a timer
+    -- whose delay has already come due can hand back nothing, and nil is not a valid key.
+    pendingWaits[holder] = holder
+    holder.timer = timer.doAfter(seconds, function()
+        pendingWaits[holder] = nil
+        callback()
+    end)
+    return holder.timer
 end
 
 function M.waitForCondition(checkFn, timeout, interval, callback)

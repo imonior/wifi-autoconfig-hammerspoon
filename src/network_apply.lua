@@ -55,6 +55,21 @@ local function shortOutput(output)
     return s
 end
 
+-- The banner and the report window are two different things, and only one of them is the
+-- user's answer. hs.notify raises a Lua error when the system will not take notifications
+-- for this app - permission switched off, or the registration lost over a reboot - and that
+-- error used to be thrown in the middle of the reporting code, cancelling the report that
+-- came after it. A banner that cannot be delivered is now a logged fact, never a reason for
+-- the apply to go quiet.
+local function notifyBanner(text)
+    local ok, err = pcall(function()
+        notify.new({ title = i18n.t("notify_title_config_changed"), informativeText = text }):send()
+    end)
+    if not ok then
+        utils.log(i18n.t("log_notify_failed", tostring(err)))
+    end
+end
+
 local function addProblem(problems, label, ok, output)
     if ok then return end
     if sudoNeedsPassword(output) then
@@ -286,11 +301,8 @@ function M.applyNetworkStrategy(ssid, onSettled)
         local valid, errMsg = config.validateConfig(setting)
         if not valid then
             utils.log(i18n.t("log_policy_invalid", ssid, tostring(errMsg)))
-            notify.new({
-                title = i18n.t("notify_title_config_changed"),
-                informativeText = "SSID: " .. ssid .. "\n" .. i18n.t("notify_policy_invalid")
-            }):send()
             settle(false)
+            notifyBanner("SSID: " .. ssid .. "\n" .. i18n.t("notify_policy_invalid"))
             return
         end
 
@@ -301,11 +313,13 @@ function M.applyNetworkStrategy(ssid, onSettled)
             if problems and #problems > 0 then
                 modeText = modeText .. "\n" .. i18n.t("notify_partial", #problems)
             end
-            notify.new({title=i18n.t("notify_title_config_changed"), informativeText="SSID: "..ssid.."\n"..modeText}):send()
-            settle(not problems or #problems == 0)
+            -- The report goes on the timer first: everything after this line is a courtesy
+            -- notice, and a courtesy notice that fails must not cancel the report.
             utils.wait(1, function()
                 M.showNetworkReport(ssid, problems)
             end)
+            settle(not problems or #problems == 0)
+            notifyBanner("SSID: " .. ssid .. "\n" .. modeText)
         end, run)
     else
         utils.log(i18n.t("log_no_config_fallback"))
@@ -332,11 +346,11 @@ function M.applyNetworkStrategy(ssid, onSettled)
             if #problems > 0 then
                 dhcpText = dhcpText .. "\n" .. i18n.t("notify_partial", #problems)
             end
-            notify.new({title=i18n.t("notify_title_config_changed"), informativeText="SSID: "..ssid.."\n"..dhcpText}):send()
-            settle(#problems == 0)
             utils.wait(1, function()
                 M.showNetworkReport(ssid, problems)
             end)
+            settle(#problems == 0)
+            notifyBanner("SSID: " .. ssid .. "\n" .. dhcpText)
         end)
     end
 end

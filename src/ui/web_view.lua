@@ -4,7 +4,6 @@ local screen = require("hs.screen")
 local urlevent = require("hs.urlevent")
 local json = require("hs.json")
 local drawing = require("hs.drawing")
-local timer = require("hs.timer")
 local core = require("wifi_autoconfig.core")
 local utils = require("wifi_autoconfig.utils")
 local config = require("wifi_autoconfig.config")
@@ -190,7 +189,12 @@ end
 function M.showPopup(mode, title, contentPayload)
     local function createPopup()
         local html = loadTemplate("popups.html")
-        if not html then return end
+        if not html then
+            -- A popup that cannot be built used to leave no trace at all, which made a
+            -- missing template indistinguishable from a popup nobody had asked for.
+            utils.log(i18n.t("log_template_missing", "popups.html"))
+            return
+        end
 
         html = html:gsub("%%POPUP_MODE%%", function() return mode end)
         html = html:gsub("%%POPUP_TITLE%%", function() return utils.escapeHTML(title) end)
@@ -242,7 +246,7 @@ function M.showPopup(mode, title, contentPayload)
             pcall(function() M.popupView:delete() end)
             M.popupView = nil
             utils.log(i18n.t("log_close_old_popup"))
-            timer.doAfter(0.1, createPopup)
+            utils.wait(0.1, createPopup)
             return
         end
     else
@@ -250,7 +254,7 @@ function M.showPopup(mode, title, contentPayload)
             pcall(function() M.logPopupView:delete() end)
             M.logPopupView = nil
             utils.log(i18n.t("log_close_log_popup"))
-            timer.doAfter(0.1, createPopup)
+            utils.wait(0.1, createPopup)
             return
         end
     end

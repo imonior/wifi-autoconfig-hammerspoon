@@ -80,6 +80,18 @@ local function vpnStatusText(status)
     return i18n.t("menu_status_disconnected")
 end
 
+-- The tunnel cores name their routing mode with an ASCII token. The three the cores
+-- actually answer with are translated; anything else is printed exactly as the core
+-- reported it, so a mode this module has never seen still reaches the user instead of
+-- disappearing behind a guess.
+local function vpnModeText(mode)
+    local lowered = tostring(mode):lower()
+    if lowered == "rule" then return i18n.t("menu_vpn_mode_rule") end
+    if lowered == "global" then return i18n.t("menu_vpn_mode_global") end
+    if lowered == "direct" then return i18n.t("menu_vpn_mode_direct") end
+    return tostring(mode)
+end
+
 -- The egress rows show whatever the probe timer last wrote, so the two states before an
 -- address exists have to be told apart: no probe yet is normal (the panel must open
 -- instantly and never wait on one), while a probe that ran and got nothing is the failure.
@@ -177,21 +189,34 @@ function M.buildStatusRows(cache)
                 -- emoji in the native fallback, a CSS dot in the panel).
                 text = string.format("%s [%s] - %s", v.name, v.source, vpnStatusText(v.status))
             }
+            if v.mode then
+                -- The core's own running mode, on a row of its own: which router the
+                -- packets take and which rule set picks them are separate facts, and
+                -- the bracket above stays the evidence kind for every kind of row.
+                rows[#rows + 1] = {
+                    kind = "muted",
+                    indent = 2,
+                    text = i18n.t("menu_label_mode") .. ": " .. vpnModeText(v.mode)
+                }
+            end
             if v.interface then
                 rows[#rows + 1] = { kind = "muted", indent = 2, text = i18n.t("menu_status_vpn_interface") .. ": " .. v.interface }
             end
             if v.details and v.details.ip4 then
-                -- The IPv4 gateway rides along the IPv4 line: IPv4/gateway: local>>peer
                 local gw4 = v.route and v.route.gateway4 or nil
                 -- Some tunnels (e.g. tun-mode proxies) use the same address for the
                 -- local end and the peer, which carries no extra information.
                 local usable = gw4 and gw4 ~= "" and not gw4:match("^link#") and gw4 ~= v.details.ip4
+                -- The gateway only joins the header once there is one to show. A tunnel
+                -- often has no next hop at all, and a row headed "IPv4/gateway" that then
+                -- carries just an address claims a router the interface does not have.
+                local label4 = usable and i18n.t("menu_label_ipv4_with_gw") or i18n.t("menu_label_ipv4")
                 local gw4Text = usable and (">>" .. gw4) or ""
                 local egress4 = (v.status == "Connected" and v.defaultEgress4) and (" (" .. i18n.t("menu_vpn_default_egress") .. ")") or ""
                 rows[#rows + 1] = {
                     kind = "muted",
                     indent = 2,
-                    text = i18n.t("menu_label_ipv4_with_gw") .. ": " .. v.details.ip4 .. gw4Text .. egress4
+                    text = label4 .. ": " .. v.details.ip4 .. gw4Text .. egress4
                 }
             end
             if v.details and v.details.ip6 then

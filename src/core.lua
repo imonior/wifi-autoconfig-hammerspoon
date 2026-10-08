@@ -471,6 +471,19 @@ local function getRunningProcesses()
     return result
 end
 
+-- The same processes, but with their arguments. A launcher that starts a Clash-family
+-- core normally names the API endpoint in the arguments rather than in a port anyone can
+-- scan for, so this is where that endpoint is found. Kept apart from the list above on
+-- purpose: matching a bare name against arguments would let any command line that merely
+-- mentions an app (a terminal title, a grep) claim that app is running.
+local function getProcessArguments()
+    local handle = io.popen("/bin/ps -axo command= 2>/dev/null")
+    if not handle then return "" end
+    local result = handle:read("*a")
+    handle:close()
+    return result
+end
+
 local function getSystemVPNs(ifaceDetails, processList)
     local scutilVPNs = {}
     local handle = io.popen("/usr/sbin/scutil --nc list 2>/dev/null")
@@ -600,7 +613,11 @@ local function getWireGuardInterfaceMap()
 end
 
 local function getListeningProcessMap()
-    local handle = io.popen("lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null")
+    -- +c 0 stops lsof from cutting the command column to nine characters. The names this
+    -- map is searched with are longer than that ("FlClashCore", "verge-mihomo"), so with
+    -- the default width the comparison could never be satisfied and the port would look
+    -- unowned by any known app.
+    local handle = io.popen("lsof -iTCP -sTCP:LISTEN -P -n +c 0 2>/dev/null")
     if not handle then return {} end
     local result = handle:read("*a")
     handle:close()
@@ -629,27 +646,117 @@ local function hasProcess(processList, name)
     return processList:match((name:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))) ~= nil
 end
 
-local function determineClashAppName(processList, listeningMap, apiPort)
-    local listener = listeningMap[apiPort]
-    if listener then
-        if listener == "FlClash" or listener == "FlClashCore" then return "FlClash" end
-        if listener:lower():match("karing") then return "Karing" end
-        if listener:lower():match("sing") then return "sing-box" end
-        if listener:lower():match("mihomo") then return "FlClash" end
+-- Which app a Clash-family core belongs to is written in its own binary name, so one
+-- marker table answers all three lookups: the process line that carries a controller
+-- socket, the process that owns a listening port, and (below) the running-process list.
+-- The order is the content: the generic "mihomo" core is what FlClash runs, so the two
+-- apps that embed mihomo under their own names have to be recognised before it is.
+local CLASH_NAME_MARKERS = {
+    { marker = "flclash", name = "FlClash" },
+    { marker = "karing", name = "Karing" },
+    { marker = "sing-box", name = "sing-box" },
+    { marker = "verge-mihomo", name = "Clash Verge" },
+    { marker = "clash-verge", name = "Clash Verge" },
+    { marker = "mihomo-party", name = "mihomo-party" },
+    { marker = "mihomo", name = "FlClash" },
+}
+
+local function namedByMarker(text)
+    if not text then return nil end
+    local lowered = text:lower()
+    for _, entry in ipairs(CLASH_NAME_MARKERS) do
+        if lowered:find(entry.marker, 1, true) then
+            return entry.name
+        end
     end
+    return nil
+end
+
+local function determineClashAppName(processList, listeningMap, apiPort, ownerHint)
+    local name = namedByMarker(ownerHint) or namedByMarker(apiPort and listeningMap[apiPort])
+    if name then return name end
 
     if processList then
         if hasProcess(processList, "FlClash") then return "FlClash" end
         if hasProcess(processList, "Karing") or hasProcess(processList, "karing") then return "Karing" end
         if hasProcess(processList, "sing-box") then return "sing-box" end
+        if hasProcess(processList, "Clash Verge") or hasProcess(processList, "clash-verge")
+            or hasProcess(processList, "verge-mihomo") then return "Clash Verge" end
     end
 
     return "Clash"
 end
 
-local function getClashAppInfos(processList, listeningMap)
+local function findFlagValue(line, flag)
+    -- The same flag arrives as `-flag value`, `-flag=value` or `--flag=value`, and its
+    -- value may be quoted because macOS paths carry spaces. The hyphens of the flag are
+    -- escaped for the same reason as the JSON keys below.
+    local pattern = "%-%-?" .. flag:gsub("%-", "%%-")
+    return line:match(pattern .. "=%s*\"([^\"]+)\"")
+        or line:match(pattern .. "%s+\"([^\"]+)\"")
+        or line:match(pattern .. "=%s*(%S+)")
+        or line:match(pattern .. "%s+(%S+)")
+end
+
+-- Where a Clash-family core serves its API is no longer always a TCP port: Clash Verge's
+-- service starts its core with `-ext-ctl-unix <path>` and `external-controller: ''`, so
+-- nothing listens on 9090 or 9097 at all, and a scan of fixed port numbers finds an empty
+-- machine - which is how a running tunnel ends up shown under its interface name instead of
+-- the program that made it. Read the endpoint from the arguments the core was started with;
+-- the fixed port list stays as the fallback for cores launched with only a TCP controller.
+local function getClashControllerEndpoints(argsText)
+    local endpoints, seen = {}, {}
+    for line in (argsText or ""):gmatch("[^\r\n]+") do
+        local lowered = line:lower()
+        if lowered:match("mihomo") or lowered:match("clash") then
+            for _, candidate in ipairs({
+                { flag = "ext-ctl-unix", kind = "unix" },
+                { flag = "ext-ctl", kind = "tcp" },
+            }) do
+                local value = findFlagValue(line, candidate.flag)
+                if value then
+                    local key = candidate.kind .. ":" .. value
+                    if not seen[key] then
+                        seen[key] = true
+                        if candidate.kind == "unix" then
+                            endpoints[#endpoints + 1] = { socket = value, owner = line }
+                        else
+                            endpoints[#endpoints + 1] = { addr = value, owner = line }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return endpoints
+end
+
+local CONTROLLER_PORTS = { "9090", "9097", "7892", "11227" }
+
+-- One request to one endpoint. Every endpoint is on this machine, so the whole call is
+-- capped at about a second: this runs inside the status refresh, and a core that accepts a
+-- connection but never answers must not hold the menu open.
+local function fetchFromController(endpoint, path)
+    local target
+    if endpoint.socket then
+        -- The URL is only the request line curl writes; over a socket transport its host
+        -- is never resolved, but curl refuses the request without one.
+        target = "--unix-socket " .. shellQuote(endpoint.socket) .. " " ..
+            shellQuote("http://localhost" .. path)
+    else
+        target = shellQuote("http://" .. endpoint.addr .. path)
+    end
+    local handle = io.popen("/usr/bin/curl -s --connect-timeout 0.3 --max-time 1 " ..
+        target .. " 2>/dev/null")
+    if not handle then return nil end
+    local result = handle:read("*a")
+    handle:close()
+    return result
+end
+
+local function getClashAppInfos(processList, listeningMap, argsText)
     -- Skip the local API probes entirely unless a Clash-family process is
-    -- actually running: otherwise the 4 sequential curls just hit
+    -- actually running: otherwise the sequential curls just hit
     -- connection-refused and waste a full status refresh. This is the single
     -- heaviest part of getVPNInfo (it now also runs on a background timer).
     if not processList or not (hasProcess(processList, "Clash") or hasProcess(processList, "FlClash")
@@ -659,73 +766,102 @@ local function getClashAppInfos(processList, listeningMap)
         return {}
     end
 
-    local ports = { "9090", "9097", "7892", "11227" }
+    local endpoints = getClashControllerEndpoints(argsText)
+    for _, port in ipairs(CONTROLLER_PORTS) do
+        endpoints[#endpoints + 1] = { addr = "127.0.0.1:" .. port, port = port }
+    end
+
     local infos = {}
-    local seenPorts = {}
 
-    for _, port in ipairs(ports) do
-        if not seenPorts[port] then
-            local handle = io.popen("curl -s --connect-timeout 0.3 http://127.0.0.1:" .. port .. "/configs 2>/dev/null")
-            if handle then
-                local result = handle:read("*a")
-                handle:close()
+    for _, endpoint in ipairs(endpoints) do
+        local result = fetchFromController(endpoint, "/configs")
+        if result and result:match("tun") then
+            local tunEnable = result:match('"tun"%s*:%s*{[^}]*"enable"%s*:%s*(true)')
+            local tunDevice = result:match('"device"%s*:%s*"([^"]+)"')
+            local mode = result:match('"mode"%s*:%s*"(%w+)"')
+            -- The hyphens are escaped: bare, a hyphen is the lazy quantifier on the
+            -- character before it, so '"mixed-port"' asks for "mixed", any number of
+            -- "d", then "port" and never matches the JSON key it names.
+            local mixedPort = result:match('"mixed%-port"%s*:%s*(%d+)')
+            local socksPort = result:match('"socks%-port"%s*:%s*(%d+)')
+            local httpPort = result:match('"port"%s*:%s*(%d+)')
 
-                if result and result:match("tun") then
-                    seenPorts[port] = true
-                    local tunEnable = result:match('"tun"%s*:%s*{[^}]*"enable"%s*:%s*(true)')
-                    local tunDevice = result:match('"device"%s*:%s*"([^"]+)"')
-                    local mode = result:match('"mode"%s*:%s*"(%w+)"')
-                    local mixedPort = result:match('"mixed-port"%s*:%s*(%d+)')
-                    local socksPort = result:match('"socks-port"%s*:%s*(%d+)')
-                    local httpPort = result:match('"port"%s*:%s*(%d+)')
+            local appName = determineClashAppName(processList, listeningMap, endpoint.port, endpoint.owner)
+            local tunEnabled = tunEnable == "true"
 
-                    local appName = determineClashAppName(processList, listeningMap, port)
-                    local tunEnabled = tunEnable == "true"
-
-                    local hasConnections = true
-                    if not tunEnabled then
-                        hasConnections = false
-                        local connHandle = io.popen("curl -s --connect-timeout 0.3 http://127.0.0.1:" .. port .. "/connections 2>/dev/null")
-                        if connHandle then
-                            local connResult = connHandle:read("*a")
-                            connHandle:close()
-                            if connResult and connResult:match('"chains"') then
-                                for chains in connResult:gmatch('"chains"%s*:%s*%[([^%]]*)%]') do
-                                    if not chains:match("DIRECT") and not chains:match("COMPATIBLE") and not chains:match("REJECT") then
-                                        hasConnections = true
-                                        break
-                                    end
-                                end
-                            end
+            local hasConnections = true
+            if not tunEnabled then
+                hasConnections = false
+                local connResult = fetchFromController(endpoint, "/connections")
+                if connResult and connResult:match('"chains"') then
+                    for chains in connResult:gmatch('"chains"%s*:%s*%[([^%]]*)%]') do
+                        if not chains:match("DIRECT") and not chains:match("COMPATIBLE") and not chains:match("REJECT") then
+                            hasConnections = true
+                            break
                         end
                     end
-
-                    table.insert(infos, {
-                        appName = appName,
-                        device = tunDevice,
-                        tunEnabled = tunEnabled,
-                        mode = mode,
-                        mixedPort = mixedPort,
-                        socksPort = socksPort,
-                        httpPort = httpPort,
-                        apiPort = port,
-                        hasConnections = hasConnections
-                    })
                 end
             end
+
+            table.insert(infos, {
+                appName = appName,
+                device = tunDevice,
+                tunEnabled = tunEnabled,
+                mode = mode,
+                mixedPort = mixedPort,
+                socksPort = socksPort,
+                httpPort = httpPort,
+                apiPort = endpoint.port,
+                hasConnections = hasConnections
+            })
         end
     end
 
     return infos
 end
 
+-- The bracket in the row is the evidence kind, like every other VPN row, so the core's
+-- running mode does not travel in it; that is a separate fact and gets its own row.
 local function identifyTunnelApp(iface, clashAppInfos)
     for _, info in ipairs(clashAppInfos or {}) do
         if info.tunEnabled and info.device == iface then
-            return { name = info.appName, source = info.mode or "TUN" }
+            return { name = info.appName, source = "TUN", mode = info.mode }
         end
     end
     return nil
+end
+
+-- The tunnels are collected by walking the interface map, and a hash walk has no order:
+-- two interfaces belonging to one client could come out on either side of another client's
+-- row, and the same system state could list them differently after two reloads. Grouped by
+-- the kind of evidence that made the row, then by the name it shows, then by the interface
+-- number, the block reads the same every time and one client's tunnels stay together.
+local TUNNEL_SOURCE_ORDER = { TUN = 1, WireGuard = 2, Tunnel = 3, Proxy = 4 }
+
+local function tunnelSourceRank(source)
+    return TUNNEL_SOURCE_ORDER[source] or 5
+end
+
+local function tunnelInterfaceNumber(iface)
+    return tonumber(iface and iface:match("(%d+)$")) or math.maxinteger
+end
+
+-- An unclaimed tunnel is labelled with the interface itself, so its label carries the
+-- interface number as text and ordering by that label would rank utun1025 in front of utun7.
+-- Such a row joins no name group, so it is ordered by number instead.
+local function tunnelNameKey(row)
+    if row.name == row.interface then return "" end
+    return row.name
+end
+
+local function compareTunnelRows(a, b)
+    local ra, rb = tunnelSourceRank(a.source), tunnelSourceRank(b.source)
+    if ra ~= rb then return ra < rb end
+    local ka, kb = tunnelNameKey(a), tunnelNameKey(b)
+    if ka ~= kb then return ka < kb end
+    local na, nb = tunnelInterfaceNumber(a.interface), tunnelInterfaceNumber(b.interface)
+    if na ~= nb then return na < nb end
+    return tostring(a.interface) < tostring(b.interface)
 end
 
 local function getRemainingTunnelInterfaces(ifaceDetails, wgInterfaceMap, processList, clashAppInfos)
@@ -735,12 +871,14 @@ local function getRemainingTunnelInterfaces(ifaceDetails, wgInterfaceMap, proces
             if det.hasIPv4 or det.hasIPv6 then
                 local displayName = wgInterfaceMap[iface]
                 local source = wgInterfaceMap[iface] and "WireGuard" or nil
+                local mode = nil
 
                 if not displayName then
                     local appInfo = identifyTunnelApp(iface, clashAppInfos)
                     if appInfo then
                         displayName = appInfo.name
                         source = appInfo.source
+                        mode = appInfo.mode
                     end
                 end
 
@@ -755,11 +893,15 @@ local function getRemainingTunnelInterfaces(ifaceDetails, wgInterfaceMap, proces
                     status = "Connected",
                     interface = iface,
                     details = det,
-                    source = source
+                    source = source,
+                    mode = mode
                 })
             end
         end
     end
+
+    table.sort(otherIfaces, compareTunnelRows)
+
     return otherIfaces
 end
 
@@ -770,6 +912,8 @@ local knownProxyApps = {
     { process = "sing-box", name = "sing-box" },
     { process = "Karing", name = "Karing" },
     { process = "karing", name = "Karing" },
+    { process = "clash-verge", name = "Clash Verge" },
+    { process = "verge-mihomo", name = "Clash Verge" },
     { process = "mihomo", name = "FlClash" },
 }
 
@@ -919,14 +1063,30 @@ end
 
 -- `netstat -rn` abbreviates IPv4 networks ("10/8", "192.168.1/32"); expand them to
 -- full CIDR so the row is unambiguous. IPv6 is already printed in full form.
-local function normalizeRouteDest(dest)
-    local base, bits = dest:match("^(.-)/(%d+)$")
-    if not base or not bits or base:match(":") then return dest end
+local function expandNetwork(base, bits)
     local octets = {}
     for o in base:gmatch("%d+") do table.insert(octets, o) end
-    if #octets == 0 or #octets >= 4 then return dest end
+    if #octets == 0 or #octets >= 4 then return nil end
     while #octets < 4 do table.insert(octets, "0") end
     return table.concat(octets, ".") .. "/" .. bits
+end
+
+local function normalizeRouteDest(dest)
+    local base, bits = dest:match("^(.-)/(%d+)$")
+    if base then
+        if base:match(":") then return dest end
+        return expandNetwork(base, bits) or dest
+    end
+    -- A destination with no separator at all is a classful network whose prefix length
+    -- netstat left out, because the octets it printed already say it: "1" is 1.0.0.0/8,
+    -- "128.0" is 128.0.0.0/16, "192.168" is 192.168.0.0/24. Anything else that arrives
+    -- without a slash - a full host address, an IPv6 form, a column that is not a
+    -- destination - is passed through rather than guessed at.
+    local octetCount = 0
+    for _ in dest:gmatch("%d+") do octetCount = octetCount + 1 end
+    if octetCount < 1 or octetCount > 3 then return dest end
+    if not dest:match("^[%d%.]+$") then return dest end
+    return expandNetwork(dest, 8 * octetCount) or dest
 end
 
 -- Parses `netstat -rn -f <family>` once and returns two views of the same output:
@@ -1038,7 +1198,7 @@ function M.getVPNInfo()
     local ifaceDetails = getInterfaceDetails(wifiDevice)
     local scutilVPNs = getSystemVPNs(ifaceDetails, processList)
     local wgInterfaceMap = getWireGuardInterfaceMap()
-    local clashAppInfos = getClashAppInfos(processList, listeningMap)
+    local clashAppInfos = getClashAppInfos(processList, listeningMap, getProcessArguments())
     local otherIfaces = getRemainingTunnelInterfaces(ifaceDetails, wgInterfaceMap, processList, clashAppInfos)
 
     for _, v in ipairs(scutilVPNs) do table.insert(vpnInfo, v) end

@@ -67,8 +67,8 @@ local function esc(value)
     return utils.escapeHTML(tostring(value == nil and "" or value))
 end
 
-local function css()
-    return table.concat({
+local function css(scrollable)
+    local rules = {
         "* { box-sizing: border-box; }",
         "html, body { margin:0; padding:0; background:transparent; overflow:hidden; }",
         "body { font:13px/" .. ROW_H .. "px -apple-system, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue', sans-serif;",
@@ -98,8 +98,18 @@ local function css()
         -- from Lua (see the note above PANEL_JS for why :hover alone is dead).
         ".action { cursor:pointer; padding:0 14px; line-height:" .. ACTION_H .. "px; }",
         ".action:hover, .action.hov { background:rgba(255,255,255,0.16); }",
-        ".action:active { background:rgba(255,255,255,0.24); }"
-    }, "\n")
+        ".action:active { background:rgba(255,255,255,0.24); }",
+    }
+    -- A menu taller than the screen gets a card that fills the window and scrolls the
+    -- rest, which has to come last so it overrides the plain overflow:hidden above.
+    -- The scroller itself stays invisible: the window width is measured from this
+    -- element's own box and a layout scrollbar would take those pixels off the row text.
+    -- The clipped row at the bottom edge is itself the cue that there is more to see.
+    if scrollable then
+        rules[#rules + 1] = "#panel { max-height:100vh; overflow-y:auto; }"
+        rules[#rules + 1] = "#panel::-webkit-scrollbar { width:0; height:0; }"
+    end
+    return table.concat(rules, "\n")
 end
 
 local function bodyFor(rows)
@@ -137,7 +147,8 @@ end
 -- some setups (it shipped once and froze the cursor machine-wide). Instead the
 -- 0.05s timer reads the cursor position with the pure getter
 -- hs.mouse.getAbsolutePosition() -- no event tap, so it cannot freeze anything
--- -- and only dispatches JavaScript when the hovered row actually changes.
+-- -- and dispatches JavaScript only when the pointer actually moved. The renderer
+-- decides which row that is, since a scrolled card moved the answer out of Lua's reach.
 local PANEL_JS = [[
 (function () {
   var bridge = (window.webkit && window.webkit.messageHandlers) ?
@@ -152,17 +163,29 @@ local PANEL_JS = [[
   });
   document.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
   var hovered = null;
-  window.__wifiPanelHoverId = function (id) {
-    var row = document.querySelector('.action[data-id="' + id + '"]');
-    if (row && row !== hovered) {
-      if (hovered) { hovered.classList.remove('hov'); }
-      row.classList.add('hov');
-      hovered = row;
-    }
+  var lastX = -1, lastY = -1;
+  function resolveHover() {
+    var el = (lastX < 0 || lastY < 0) ? null : document.elementFromPoint(lastX, lastY);
+    var row = el && el.closest ? el.closest('.action') : null;
+    if (row === hovered) { return; }
+    if (hovered) { hovered.classList.remove('hov'); }
+    if (row) { row.classList.add('hov'); }
+    hovered = row || null;
+  }
+  // The pointer arrives in window coordinates rather than as a row number, because once
+  // the card scrolls the row under it is no longer something Lua can work out from the
+  // model: elementFromPoint already accounts for the scroll offset, for the width the CSS
+  // actually chose, and for the informational rows that ignore the pointer.
+  window.__wifiPanelHoverAt = function (x, y) {
+    lastX = x; lastY = y;
+    resolveHover();
   };
   window.__wifiPanelHoverReset = function () {
+    lastX = -1; lastY = -1;
     if (hovered) { hovered.classList.remove('hov'); hovered = null; }
   };
+  var card = document.getElementById('panel');
+  if (card) { card.addEventListener('scroll', resolveHover); }
   window.addEventListener('load', function () {
     var p = document.getElementById('panel');
     if (p) { post({ type: 'size', w: Math.ceil(p.getBoundingClientRect().width) }); }
@@ -171,10 +194,10 @@ local PANEL_JS = [[
 ]]
 
 -- Exported so the layout can be rendered and inspected outside Hammerspoon.
-function M.renderHTML(rowList)
+function M.renderHTML(rowList, scrollable)
     return table.concat({
         '<!DOCTYPE html><html><head><meta charset="utf-8"><style>',
-        css(),
+        css(scrollable),
         '</style></head><body><div id="panel">',
         bodyFor(rowList),
         '</div><script>',
@@ -209,15 +232,35 @@ end
 -- The screen the given point (e.g. the menu bar icon) lives on -- not the
 -- main screen: with more than one display the icon can sit on a screen whose
 -- origin is negative, and clamping against the wrong frame drags the panel
--- all the way to the wrong screen's edge.
-local function screenFrameContaining(x, y, fallback)
+-- all the way to the wrong screen's edge. Returns the screen itself as well as
+-- its frame, because the usable bottom needs a second query on that screen.
+local function screenContaining(x, y, fallbackFrame)
     for _, s in ipairs(screen.allScreens()) do
         local f = s:fullFrame()
         if x >= f.x and x <= f.x + f.w and y >= f.y and y <= f.y + f.h then
-            return f
+            return s, f
         end
     end
-    return fallback
+    return nil, fallbackFrame
+end
+
+-- The lowest row of pixels the panel may occupy. fullFrame reaches under the Dock, so
+-- a menu that ends there would have its action rows behind it; visibleFrame stops short
+-- of the Dock and of the menu bar, which is the area a window can really be read in.
+local function usableBottom(s, frame)
+    local vf = s and tryCall(s, "visibleFrame")
+    if vf and vf.y + vf.h <= frame.y + frame.h then return vf.y + vf.h end
+    return frame.y + frame.h
+end
+
+-- The height a panel can occupy hanging under the menu bar item. Returning nil means the
+-- geometry is unknown (no icon frame yet), and the caller then takes the content height
+-- as it is rather than guessing a limit.
+local function availableHeightFor(item)
+    local f = item and tryCall(item, "frame")
+    if not f then return nil end
+    local s, sf = screenContaining(f.x + f.w / 2, f.y + f.h / 2, screen.mainScreen():fullFrame())
+    return math.floor(usableBottom(s, sf) - EDGE - (f.y + f.h + GAP))
 end
 
 local function positionFor(item, height, width)
@@ -229,7 +272,7 @@ local function positionFor(item, height, width)
         return { x = math.floor(p.x - width), y = math.floor(p.y + 12), w = width, h = height }
     end
 
-    local sf = screenFrameContaining(f.x + f.w / 2, f.y + f.h / 2, screen.mainScreen():fullFrame())
+    local s, sf = screenContaining(f.x + f.w / 2, f.y + f.h / 2, screen.mainScreen():fullFrame())
 
     -- Right-align the panel under the icon, like a real NSMenu does.
     local x = f.x + f.w - width
@@ -237,7 +280,12 @@ local function positionFor(item, height, width)
 
     if x + width > sf.x + sf.w - EDGE then x = sf.x + sf.w - EDGE - width end
     if x < sf.x + EDGE then x = sf.x + EDGE end
-    if y + height > sf.y + sf.h - EDGE then y = sf.y + sf.h - EDGE - height end
+    -- The bottom is kept inside the usable area, but the top is never pushed above the
+    -- icon it hangs from: moving the whole panel up was how an over-tall menu used to
+    -- escape off the top of the screen and lose its first rows. A panel that still does
+    -- not fit is capped by the caller and scrolls.
+    local bottom = usableBottom(s, sf) - EDGE
+    if y + height > bottom then y = math.max(f.y + f.h + GAP, bottom - height) end
     if y < sf.y + EDGE then y = sf.y + EDGE end
 
     return { x = math.floor(x), y = math.floor(y), w = width, h = height }
@@ -258,7 +306,7 @@ end
 -- The tap listens ONLY to mouse-down events (never mouseMoved): a mouseMoved
 -- tap froze the whole system pointer on this machine, so hover tracking is
 -- done by polling hs.mouse.getAbsolutePosition() on hoverTimer instead.
-local hoverTarget = nil
+local lastPointer = nil
 local hoverTimer = nil
 
 local function stopHoverTimer()
@@ -266,34 +314,13 @@ local function stopHoverTimer()
         pcall(function() hoverTimer:stop() end)
         hoverTimer = nil
     end
-    hoverTarget = nil
+    lastPointer = nil
 end
 
--- Which action row (by data-id) sits under the pointer, if any. Actions are
--- the trailing rows of the model with a fixed height, so this is plain
--- arithmetic -- no round trip into the renderer.
-local function actionIdAt(p, f)
-    if not rows or #rows == 0 then return nil end
-    local count = 0
-    for _, r in ipairs(rows) do
-        if r.kind == "action" then count = count + 1 end
-    end
-    if count == 0 then return nil end
-
-    local top = measure(rows) - PAD_V - count * ACTION_H
-    local idx = math.floor((p.y - f.y - top) / ACTION_H) + 1
-    if idx < 1 or idx > count then return nil end
-
-    local n = 0
-    for _, r in ipairs(rows) do
-        if r.kind == "action" then
-            n = n + 1
-            if n == idx then return r.id end
-        end
-    end
-    return nil
-end
-
+-- Which row carries the highlight is now the renderer's decision, not arithmetic on the
+-- model: a scrolled card no longer has its first row at the top of the window, so the
+-- only thing Lua can offer is where the pointer sits inside it. The JS resolves that to a
+-- row, and resolves it again on every scroll with the same last position.
 local function ensureHoverTimer()
     if hoverTimer then return end
     hoverTimer = timer.doEvery(0.05, function()
@@ -304,24 +331,16 @@ local function ensureHoverTimer()
         -- cursor). Reading the position is a pure getter and never taps events.
         local p = mouse.getAbsolutePosition()
         if not p then return end
+        if lastPointer and lastPointer.x == p.x and lastPointer.y == p.y then return end
+        lastPointer = { x = p.x, y = p.y }
+
         local f = tryCall(panel, "frame")
         if not f or not pointIn(p, f) then
-            if hoverTarget then
-                hoverTarget = nil
-                tryCall(panel, "evaluateJavaScript", "__wifiPanelHoverReset && __wifiPanelHoverReset()")
-            end
+            tryCall(panel, "evaluateJavaScript", "__wifiPanelHoverReset && __wifiPanelHoverReset()")
             return
         end
-
-        local id = actionIdAt(p, f)
-        if id ~= hoverTarget then
-            hoverTarget = id
-            if id then
-                tryCall(panel, "evaluateJavaScript", string.format("__wifiPanelHoverId(%q)", id))
-            else
-                tryCall(panel, "evaluateJavaScript", "__wifiPanelHoverReset && __wifiPanelHoverReset()")
-            end
-        end
+        tryCall(panel, "evaluateJavaScript",
+            string.format("__wifiPanelHoverAt(%d, %d)", math.floor(p.x - f.x), math.floor(p.y - f.y)))
     end)
 end
 
@@ -428,9 +447,18 @@ function M.show(model)
     local wv = ensurePanel()
     if not wv then return end
 
+    -- The window is sized from the row model, so content taller than the screen used to
+    -- simply hang off the bottom out of reach. Now the window takes what the screen
+    -- offers and the card inside it scrolls; the height is capped rather than the
+    -- content, because a menu cannot drop rows and stay readable.
+    local contentHeight = measure(rows)
+    local available = availableHeightFor(menuBarItemRef)
+    local scrollable = available ~= nil and contentHeight > available
+    local height = scrollable and available or contentHeight
+
     currentWidth = WIDTH_DEFAULT
-    tryCall(wv, "frame", positionFor(menuBarItemRef, measure(rows), currentWidth))
-    wv:html(M.renderHTML(rows))
+    tryCall(wv, "frame", positionFor(menuBarItemRef, height, currentWidth))
+    wv:html(M.renderHTML(rows, scrollable))
     wv:show()
 
     visible = true
