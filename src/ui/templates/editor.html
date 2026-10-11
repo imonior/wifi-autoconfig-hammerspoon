@@ -218,6 +218,13 @@
                 <label id="label-dns">DNS Servers</label>
                 <input type="text" id="dns" placeholder="多值请用逗号分隔，留空则自动获取">
             </div>
+
+            <div class="section-title" id="section-fallback-dns">四、兜底 DNS（全局）</div>
+            <div class="form-group">
+                <label id="label-fallback-dns">Fallback DNS</label>
+                <input type="text" id="fallback-dns" placeholder="未配置时使用内置公共 DNS">
+                <button class="secondary" id="btn-save-fallback" onclick="saveFallbackDns()">保存兜底 DNS</button>
+            </div>
         </div>
 
         <div class="btn-group">
@@ -256,6 +263,12 @@
             prefix_length: "前缀长度",
             dns_servers: "DNS 服务器",
             dns_placeholder: "多值请用逗号分隔，留空则自动获取",
+            dns_placeholder_manual: "留空则在静态 IP 下改用兜底 DNS",
+            dns_placeholder_dhcp: "留空则由 DHCP 自动获取",
+            section_fallback_dns: "四、兜底 DNS（全局）",
+            label_fallback_dns: "兜底 DNS",
+            fallback_dns_placeholder: "未配置时使用内置公共 DNS",
+            btn_save_fallback: "保存兜底 DNS",
             force_apply: "⚡ 强制覆写当前网卡",
             delete: "删除配置",
             save: "保存",
@@ -293,6 +306,12 @@
             prefix_length: "Prefix Length",
             dns_servers: "DNS Servers",
             dns_placeholder: "Multiple values separated by comma, leave empty for auto",
+            dns_placeholder_manual: "Leave empty to use the fallback DNS on a static address",
+            dns_placeholder_dhcp: "Leave empty to obtain DNS automatically via DHCP",
+            section_fallback_dns: "4. Fallback DNS (global)",
+            label_fallback_dns: "Fallback DNS",
+            fallback_dns_placeholder: "Built-in public DNS is used when this is empty",
+            btn_save_fallback: "Save fallback DNS",
             force_apply: "⚡ Force Apply to Current NIC",
             delete: "Delete Config",
             save: "Save",
@@ -341,6 +360,11 @@
         document.getElementById('label-v6gateway').textContent = t('router');
         document.getElementById('label-dns').textContent = t('dns_servers');
         document.getElementById('dns').placeholder = t('dns_placeholder');
+
+        document.getElementById('section-fallback-dns').textContent = t('section_fallback_dns');
+        document.getElementById('label-fallback-dns').textContent = t('label_fallback_dns');
+        document.getElementById('fallback-dns').placeholder = t('fallback_dns_placeholder');
+        document.getElementById('btn-save-fallback').textContent = t('btn_save_fallback');
         
         document.getElementById('btn-force').textContent = t('force_apply');
         document.getElementById('btn-delete').textContent = t('delete');
@@ -627,6 +651,14 @@
             v4Inputs.style.display = "none";
         }
 
+        // Leaving DNS empty does not mean the same thing in the two modes: on DHCP the
+        // lease supplies the resolvers, on a static address nothing does and the fallback
+        // takes over, so the placeholder has to say which of the two will happen.
+        // DNS 留空在两种模式下含义不同：DHCP 下租约会提供解析器，静态地址下没有任何东西
+        // 提供、由兜底接管，所以 placeholder 必须说明会发生哪一种。
+        document.getElementById("dns").placeholder =
+            isV4Manual ? t('dns_placeholder_manual') : t('dns_placeholder_dhcp');
+
         const isV6Manual = document.getElementById("v6mode").value === "manual";
         document.getElementById("v6-manual-inputs").style.display = isV6Manual ? "block" : "none";
     }
@@ -653,9 +685,23 @@
         }
     }
 
-    function updateCurrentNetworkUI(ssid, v4mode, ip, netmask, gateway, dns, v6mode, v6ip) {
+    // Only filled once: this field holds what the user configured, and overwriting it on
+    // every status sync would discard whatever they are in the middle of typing.
+    // 只填充一次：这个输入框保存用户配置的值，每次状态同步都覆盖会丢掉正在输入的内容。
+    let fallbackDnsLoaded = false;
+
+    function saveFallbackDns() {
+        callLua('save_fallback_dns', {dns: document.getElementById("fallback-dns").value});
+    }
+
+    function updateCurrentNetworkUI(ssid, v4mode, ip, netmask, gateway, dns, v6mode, v6ip, fallbackDns) {
         const prevSSID = window.currentConnectedSSID;
         window.currentConnectedSSID = ssid;
+
+        if (fallbackDnsLoaded === false) {
+            document.getElementById("fallback-dns").value = fallbackDns || "";
+            fallbackDnsLoaded = true;
+        }
         
         // getActiveDNS() answers with a localized "system auto" label when the
         // interface has no explicit servers. That text is not a DNS value, and

@@ -173,9 +173,15 @@ function M.syncHardwareStatusToUI()
         utils.log(i18n.t("log_sync_status", tostring(status.ssid), tostring(dns)))
     end
     
+    -- The editor field shows what the user configured, which may be empty - unlike the
+    -- value the apply actually falls back to, which is never empty. Sending the raw
+    -- setting keeps an unconfigured fallback from looking like a configured one.
+    -- 编辑器输入框显示的是用户配置的值，可能为空——不同于应用时真正使用的兜底值，后者
+    -- 永不为空。传原始设置可以免得"未配置"看起来像"已配置"。
+    local fallbackDns = config.fallbackDns or ""
     local ssidStr = status.ssid or i18n.t("not_connected")
-    local jsExpr = string.format("updateCurrentNetworkUI('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')", 
-        utils.escapeJS(ssidStr), utils.escapeJS(v4mode), utils.escapeJS(ip), utils.escapeJS(nm), utils.escapeJS(gw), utils.escapeJS(dns), utils.escapeJS(v6mode), utils.escapeJS(v6ip))
+    local jsExpr = string.format("updateCurrentNetworkUI('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')", 
+        utils.escapeJS(ssidStr), utils.escapeJS(v4mode), utils.escapeJS(ip), utils.escapeJS(nm), utils.escapeJS(gw), utils.escapeJS(dns), utils.escapeJS(v6mode), utils.escapeJS(v6ip), utils.escapeJS(fallbackDns))
         
     local success, result = pcall(function()
         return M.editorView:evaluateJavaScript(jsExpr)

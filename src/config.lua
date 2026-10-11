@@ -10,6 +10,32 @@ local modulePath = utils.modulePath
 M.path = modulePath .. "config.json"
 M.current = {}
 
+-- Fallback DNS lives in a file of its own rather than in config.json: M.write()
+-- serialises M.current and nothing else, and M.read() drops every top-level value
+-- that is not a policy table, so a fallback field inside the policy file would
+-- survive only until the first save and then disappear without a word.
+-- 兜底 DNS 单独存一个文件，不放进 config.json：M.write() 只序列化 M.current，
+-- 而 M.read() 会丢弃所有非策略表的顶层值，写进策略文件的兜底字段只会活到下一次
+-- 保存，然后无声消失。
+M.fallbackPath = modulePath .. "fallback_dns.json"
+
+-- The list used when a policy names no DNS and the network itself offers nothing.
+-- Public resolvers rather than a silent clear: a static address has no DHCP lease to
+-- supply resolvers of its own, so clearing the list would leave the machine unable to
+-- resolve names while every command still reported success.
+-- 当策略未指定 DNS、且网络本身也没提供 DNS 时使用的列表。用公共解析器而不是静默
+-- 清空：静态地址没有 DHCP 租约来提供解析器，清空会让机器无法解析域名，而命令却
+-- 全部报成功。
+local DEFAULT_FALLBACK_DNS = "223.5.5.5,114.114.114.114"
+
+-- Never returns nil: an unset or unusable fallback still has to resolve to something,
+-- and that something is the built-in pair rather than an empty list.
+-- 永不返回 nil：未设置或不可用的兜底也必须落到某个值上，那就是内置的一对，而不是空列表。
+function M.getFallbackDns()
+    if M.fallbackDns and M.fallbackDns ~= "" then return M.fallbackDns end
+    return DEFAULT_FALLBACK_DNS
+end
+
 -- True while the on-disk config could not be parsed. In that state M.current is
 -- stale and writes are refused, so an unreadable file can never be replaced by
 -- the empty/partial table that resulted from failing to read it.
@@ -62,6 +88,57 @@ local function isValidIPv4(str)
         local n = tonumber(v)
         if not n or n < 0 or n > 255 then return false end
     end
+    return true
+end
+
+-- Keeps only well-formed IPv4 addresses, so a half-typed list never becomes the
+-- resolvers the network falls back to. Returns nil when nothing usable is left.
+-- 只保留格式正确的 IPv4 地址，避免半途输入的字符串变成网络实际使用的解析器。
+-- 没有任何可用项时返回 nil。
+local function sanitizeFallbackDns(value)
+    if type(value) ~= "string" then return nil end
+    local parts = {}
+    for entry in string.gmatch(value, "[^,%s]+") do
+        if isValidIPv4(entry) then parts[#parts + 1] = entry end
+    end
+    return #parts > 0 and table.concat(parts, ",") or nil
+end
+
+function M.setFallbackDns(value)
+    M.fallbackDns = sanitizeFallbackDns(value)
+    return M.fallbackDns
+end
+
+-- A hand-edited file that no longer parses means "no fallback configured", which
+-- resolves to the built-in pair; it must not take the policy file down with it.
+-- 手改坏了的文件按“未配置兜底”处理，回落到内置的一对；不能牵连策略文件本身。
+function M.readFallbackDns()
+    local f = io.open(M.fallbackPath, "r")
+    if not f then
+        M.fallbackDns = nil
+        return nil
+    end
+    local content = f:read("*a")
+    f:close()
+    local ok, decoded = pcall(json.decode, content)
+    if ok and type(decoded) == "table" then
+        M.fallbackDns = sanitizeFallbackDns(decoded.dns)
+    else
+        M.fallbackDns = nil
+    end
+    return M.fallbackDns
+end
+
+function M.writeFallbackDns(value)
+    local clean = sanitizeFallbackDns(value)
+    local f = io.open(M.fallbackPath, "w")
+    if not f then
+        utils.log(i18n.t("log_fallback_dns_write_failed"))
+        return false, i18n.t("ui_fallback_dns_save_failed")
+    end
+    f:write(json.encode({ dns = clean or "" }, true))
+    f:close()
+    M.fallbackDns = clean
     return true
 end
 
@@ -352,6 +429,10 @@ function M.read()
         end
     end
     M.current = result
+    -- Loaded alongside the policies: the fallback is what a policy with no DNS of
+    -- its own resolves to, so it has to be in memory before the first apply.
+    -- 随策略一起加载：兜底是没有 DNS 的策略最终落到哪里的依据，必须在第一次应用前就绪。
+    M.readFallbackDns()
     if rebuildFile then
         -- The file held nothing, so writing what was loaded back out loses nothing and
         -- leaves a first-run or emptied file in place again.
@@ -398,6 +479,30 @@ function M.write()
 end
 
 function M.registerURLSchemes(onConfigChangedCallback, onForceApply, onFetchInfo, onCloseEditor)
+    -- The fallback is global rather than per-SSID, so it has its own event instead of
+    -- riding along with a policy save: it must never end up inside M.current, where it
+    -- would be treated as a policy for an SSID named after it.
+    -- 兜底是全局的、不属于某个 SSID，所以单独开一个事件，不搭策略保存的车：它绝不能
+    -- 被写进 M.current，否则会被当成同名 SSID 的一条策略。
+    urlevent.bind("save_fallback_dns", function(_, params)
+        local raw = nil
+        if params.data then
+            local ok, decoded = pcall(json.decode, params.data)
+            if ok and type(decoded) == "table" then raw = decoded.dns end
+        elseif params.dns ~= nil then
+            raw = params.dns
+        end
+        if raw == nil then return end
+
+        local ok, errMsg = M.writeFallbackDns(raw)
+        if not ok then
+            alert.show(i18n.t("ui_validation_error") .. ": " .. tostring(errMsg))
+            return
+        end
+        alert.show(i18n.t("ui_fallback_dns_saved"))
+        utils.log(i18n.t("log_fallback_dns_saved", M.getFallbackDns()))
+    end)
+
     urlevent.bind("save_wifi_scene", function(_, params)
         local d = nil
         if params.data then

@@ -95,6 +95,32 @@ local function failIPv6(problems, status, output, v6mode)
     end
 end
 
+-- "Did the interface end up able to resolve names" cannot be answered by checking for
+-- an empty string: getActiveDNS() replies with a localized "no DNS configured" label
+-- when there are no resolvers, and that label is neither empty nor an address. Only a
+-- literal IPv4 address counts, so the label is read as "nothing to resolve with".
+-- “接口最终能否解析域名”不能用空串判断：没有解析器时 getActiveDNS() 返回的是本地化的
+-- “未配置 DNS”标签，它既非空串也不是地址。只有真正的 IPv4 地址才算数，这样标签会被
+-- 正确理解为“没有可用解析器”。
+local function hasUsableDns(dns)
+    if not dns then return false end
+    for entry in string.gmatch(dns, "[^,%s]+") do
+        if entry:match("^%d+%.%d+%.%d+%.%d+$") then return true end
+    end
+    return false
+end
+
+-- A fallback is not a failure: the machine does resolve names, just not through the
+-- servers the policy named. Notes travel with the report so the user can see which
+-- resolvers are actually in effect, without turning a successful apply into a partial one.
+-- 用了兜底不算失败：机器确实能解析域名，只是用的不是策略里写的那组。提示随报告一起展示，
+-- 让用户看到实际生效的是哪组解析器，同时不会把一次成功的应用变成“部分应用”。
+function M.withNotes(notes, report)
+    if not notes or #notes == 0 then return report end
+    return i18n.t("popup_notes_header") .. "\n• " ..
+        table.concat(notes, "\n• ") .. "\n\n" .. report
+end
+
 -- A Wi-Fi switch can happen again while an earlier sequence is still waiting (up to 15
 -- seconds for DHCP, 10 for a static address to show up, 5 for DNS). Those waits resume
 -- whenever they like, and the stale one would then push the PREVIOUS network's DNS and
@@ -117,7 +143,7 @@ end
 -- problems is a list of step descriptions that did not land. It travels with the
 -- report so the popup says "partly applied" instead of claiming success after the
 -- networksetup calls were refused.
-function M.showNetworkReport(ssid, problems)
+function M.showNetworkReport(ssid, problems, notes)
     local status = core.getCurrentWiFiStatus()
     local currentSSID = status.ssid or i18n.t("unknown")
 
@@ -140,7 +166,7 @@ function M.showNetworkReport(ssid, problems)
 
     local report = M.buildNetworkReport(configSource, status)
     ui.showPopup("success", M.resultTitle(problems, i18n.t("popup_title_config_success")),
-        M.withProblems(problems, report))
+        M.withProblems(problems, M.withNotes(notes, report)))
     ui.syncHardwareStatusToUI()
 end
 
@@ -166,6 +192,10 @@ function M.applyConfigToInterface(wifiInterface, setting, callback, run)
     -- their token; a caller that does not is superseding whatever is in flight.
     run = run or nextRun()
     local problems = {}
+    -- Notes are not problems: they say what was done rather than what failed, and they
+    -- must not turn a successful apply into a partial one.
+    -- 提示不是问题：它说的是做了什么，而不是什么失败了，不应把成功的应用变成“部分应用”。
+    local notes = {}
     local function fail(label, ok, output)
         addProblem(problems, label, ok, output)
     end
@@ -173,41 +203,89 @@ function M.applyConfigToInterface(wifiInterface, setting, callback, run)
     if setting.mode == "manual" then
         local netmask = setting.netmask or "255.255.255.0"
 
+        -- Read the resolvers the interface is using BEFORE it is switched to a static
+        -- address: at this point it still holds whatever the network handed it (a DHCP
+        -- lease on a fresh connection, or the previous static policy on a re-apply), so
+        -- this is the one list known to work on this network. A policy that names no DNS
+        -- falls back to it instead of having its resolver list cleared outright.
+        -- 在切到静态地址之前读取接口正在使用的解析器：此刻接口还持有网络下发的内容（新连接
+        -- 的 DHCP 租约，或重复应用时的上一条静态策略），这是本机唯一已知可用的那组。策略
+        -- 未指定 DNS 时就回落到它，而不是把解析器列表清空。
+        local dnsBeforeSwitch
+        if not (setting.dns and setting.dns:match("%S")) then
+            dnsBeforeSwitch = core.getActiveDNS()
+        end
+
         local v6status, v6output = core.configureIPv6(wifiInterface, setting.v6mode, setting.ipv6, setting.v6prefix, setting.v6gateway)
         failIPv6(problems, v6status, v6output, setting.v6mode)
 
         local v4ok, v4output = core.runWithSudo("/usr/sbin/networksetup -setmanual " .. core.shellQuote(wifiInterface) .. " " .. core.shellQuote(setting.ip) .. " " .. core.shellQuote(netmask) .. " " .. core.shellQuote(setting.gateway))
         fail(i18n.t("problem_ipv4_static"), v4ok, v4output)
 
+        -- A policy that names no DNS cannot be answered with "empty" on a static address:
+        -- there is no DHCP lease to supply resolvers, so clearing the list would leave the
+        -- machine unable to resolve names while every command reported success. The order
+        -- is what this network was already using, then the configured fallback.
+        -- 静态地址下，策略未指定 DNS 不能用“清空”来回应：没有 DHCP 租约提供解析器，清空会
+        -- 让机器无法解析域名，而命令却全部报成功。顺序是：本网络已在用的 → 用户配置的兜底。
+        local dnsFallbackNote
+        local targetDns = setting.dns
+        if not (targetDns and targetDns:match("%S")) then
+            if hasUsableDns(dnsBeforeSwitch) then
+                targetDns = dnsBeforeSwitch
+                dnsFallbackNote = i18n.t("note_dns_fallback_network", targetDns)
+            else
+                targetDns = config.getFallbackDns()
+                dnsFallbackNote = i18n.t("note_dns_fallback_configured", targetDns)
+            end
+        end
+
         local function applyDns()
             if stale(run) then return end
 
-            local dnsOk, dnsOutput = core.setDNSServers(wifiInterface, setting.dns)
+            local dnsOk, dnsOutput = core.setDNSServers(wifiInterface, targetDns)
             fail(i18n.t("problem_dns"), dnsOk, dnsOutput)
 
-            local targetDns = setting.dns or ""
-            if targetDns:match("%S") then
-                utils.waitForCondition(function()
-                    local activeDns = core.getActiveDNS()
+            if dnsFallbackNote then
+                utils.log(i18n.t("log_dns_fallback", tostring(targetDns)))
+            end
+
+            -- Whichever path was taken - the policy's own servers or a fallback - the
+            -- interface has to end up able to resolve names. This check used to run only
+            -- when the policy named servers, so a cleared list was never verified and a
+            -- static interface left with no resolver was reported as a successful apply.
+            -- 无论走哪条路径（策略自己的服务器还是兜底），接口最终都必须能解析域名。这个检查
+            -- 过去只在策略指定了 DNS 时才跑，所以被清空的列表从不校验，没有解析器的静态接口
+            -- 会被报成“应用成功”。
+            utils.waitForCondition(function()
+                local activeDns = core.getActiveDNS()
+                if not hasUsableDns(activeDns) then return false end
+                if targetDns and targetDns:match("%S") then
                     local activeSet = {}
                     for entry in string.gmatch(activeDns, "[^,%s]+") do activeSet[entry] = true end
                     for dnsEntry in string.gmatch(targetDns, "[^,%s]+") do
-                        if not activeSet[dnsEntry] then
-                            return false
-                        end
+                        if not activeSet[dnsEntry] then return false end
                     end
-                    return true
-                end, 5, 0.5, function(dnsSet)
-                    if stale(run) then return end
-                    if not dnsSet then
+                end
+                return true
+            end, 5, 0.5, function(dnsSet)
+                if stale(run) then return end
+                if not dnsSet then
+                    -- Two different failures land here and they are not the same thing to
+                    -- the user: no resolvers at all, or resolvers that are not the ones
+                    -- that were asked for.
+                    -- 这里有两种不同的失败，对用户不是一回事：完全没有解析器，或生效的不是要求的那组。
+                    if not hasUsableDns(core.getActiveDNS()) then
+                        utils.log(i18n.t("log_warn_dns_unusable"))
+                        table.insert(problems, i18n.t("problem_dns_unusable"))
+                    else
                         utils.log(i18n.t("log_warn_dns_not_effective"))
                         table.insert(problems, i18n.t("problem_dns_not_effective"))
                     end
-                    if callback then callback(problems) end
-                end)
-            else
-                if callback then callback(problems) end
-            end
+                end
+                if dnsFallbackNote then table.insert(notes, dnsFallbackNote) end
+                if callback then callback(problems, notes) end
+            end)
         end
 
         -- The write itself was refused, so waiting up to 5 seconds for an address
@@ -238,11 +316,41 @@ function M.applyConfigToInterface(wifiInterface, setting, callback, run)
             local v6status, v6output = core.configureIPv6(wifiInterface, setting.v6mode, setting.ipv6, setting.v6prefix, setting.v6gateway)
             failIPv6(problems, v6status, v6output, setting.v6mode)
 
+            -- On DHCP an empty policy really does mean "let the lease supply the resolvers",
+            -- so clearing the list is the right answer here. What was missing is the check
+            -- that the resolvers actually arrived: this branch used to verify nothing at
+            -- all, while the static branch at least verified the servers the policy named.
+            -- DHCP 下策略留空确实是“让租约提供解析器”，所以清空列表在这里是正确的。缺的是
+            -- 解析器是否真的到位的检查：这个分支过去什么都不校验，而静态分支至少会校验策略
+            -- 指定的那组。
             local targetDns = setting.dns or ""
-            local dnsOk, dnsOutput = core.setDNSServers(wifiInterface, targetDns:match("%S") and targetDns or "")
+            local dnsOk, dnsOutput = core.setDNSServers(wifiInterface, targetDns)
             fail(i18n.t("problem_dns"), dnsOk, dnsOutput)
 
-            if callback then callback(problems) end
+            utils.waitForCondition(function()
+                local activeDns = core.getActiveDNS()
+                if not hasUsableDns(activeDns) then return false end
+                if targetDns:match("%S") then
+                    local activeSet = {}
+                    for entry in string.gmatch(activeDns, "[^,%s]+") do activeSet[entry] = true end
+                    for dnsEntry in string.gmatch(targetDns, "[^,%s]+") do
+                        if not activeSet[dnsEntry] then return false end
+                    end
+                end
+                return true
+            end, 5, 0.5, function(dnsSet)
+                if stale(run) then return end
+                if not dnsSet then
+                    if not hasUsableDns(core.getActiveDNS()) then
+                        utils.log(i18n.t("log_warn_dns_unusable"))
+                        table.insert(problems, i18n.t("problem_dns_unusable"))
+                    else
+                        utils.log(i18n.t("log_warn_dns_not_effective"))
+                        table.insert(problems, i18n.t("problem_dns_not_effective"))
+                    end
+                end
+                if callback then callback(problems, notes) end
+            end)
         end
 
         if not ok then
@@ -308,7 +416,7 @@ function M.applyNetworkStrategy(ssid, onSettled)
 
         utils.log(i18n.t("log_apply_rule", ssid, setting.mode))
 
-        M.applyConfigToInterface(wifiInterface, setting, function(problems)
+        M.applyConfigToInterface(wifiInterface, setting, function(problems, notes)
             local modeText = setting.mode == "manual" and i18n.t("notify_static_ip") or i18n.t("notify_dhcp")
             if problems and #problems > 0 then
                 modeText = modeText .. "\n" .. i18n.t("notify_partial", #problems)
@@ -316,7 +424,7 @@ function M.applyNetworkStrategy(ssid, onSettled)
             -- The report goes on the timer first: everything after this line is a courtesy
             -- notice, and a courtesy notice that fails must not cancel the report.
             utils.wait(1, function()
-                M.showNetworkReport(ssid, problems)
+                M.showNetworkReport(ssid, problems, notes)
             end)
             settle(not problems or #problems == 0)
             notifyBanner("SSID: " .. ssid .. "\n" .. modeText)

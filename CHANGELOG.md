@@ -7,6 +7,12 @@ All notable changes to **Wi-Fi AutoConfig for Hammerspoon** are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.7] - 2026-10-12
+
+### Fixed
+
+- **A static policy that names no DNS no longer clears the resolver list** — on a static address there is no DHCP lease to supply resolvers, so `networksetup -setdnsservers <service> empty` left the machine unable to resolve names while every command still reported success, and the empty case was the one case that was never read back to check. A static policy with no DNS now falls back, in order, to the resolvers the interface was already using (read before the address is switched, which on a fresh connection is what this network handed out), then to the fallback DNS configured in the editor, then to a built-in public pair. Whichever path is taken, the interface is read back afterwards: an apply that leaves it with no usable DNS is reported as a problem instead of as a success. The fallback appears in the report as a note rather than as a failure, because name resolution does work - just not through servers the policy named. The editor gained a global **Fallback DNS** field, and the DNS placeholder now says what leaving it empty will do for the selected IPv4 mode. A DHCP policy with no DNS is deliberately unchanged: there, clearing the list is the correct answer because the lease supplies the resolvers, and that case is verified too now.
+
 ## [3.2.6] - 2026-10-09
 
 ### Changed
