@@ -7,6 +7,12 @@ All notable changes to **Wi-Fi AutoConfig for Hammerspoon** are documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The fallback DNS is edited in one place and shown everywhere else** — the field used to sit in every profile's panel with a full-width save button pushed onto its own row, which made a global setting read as a per-network one and gave it a second submit-sized button. The save button now sits beside the input at field size, and the row is editable only while the ★ Global Fallback Policy is selected; every other profile shows the value in effect with a pointer to where it is changed. The fallback a save produces is reflected in those rows immediately rather than at the next status sync, and the `__DEFAULT__` ssid literal is named once instead of being repeated in four places.
+
 ## [3.2.7] - 2026-10-12
 
 ### Fixed

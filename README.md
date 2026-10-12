@@ -13,6 +13,7 @@ Automatically switches network configurations (static IP / DHCP / custom DNS / I
 - **Static IP & DHCP modes** — `"manual"` for static binding, `"dhcp"` for dynamic allocation with optional custom DNS
 - **IPv6 control** — `automatic`, `manual`, or `off` per network
 - **Global fallback policy** — The `__DEFAULT__` profile applies to any unconfigured SSID
+- **Fallback DNS** — A static address has no DHCP lease to supply resolvers, so a static profile that names no DNS falls back, in order, to the resolvers the network handed out, then to a global fallback DNS configured in the editor, then to a built-in public pair; the interface is read back afterwards, and an apply that ends with no usable resolver is reported as a problem
 - **Force-apply from editor** — Apply editor contents directly to the network interface without saving, with a confirmation dialog showing full config details
 - **WebView configuration editor** — Built-in HTML/CSS UI for managing network profiles with live hardware status sync
 - **Menu bar integration** — Quick access to settings, logs, DHCP reset, and force re-detection; double-clicking the icon opens the settings editor
@@ -195,7 +196,7 @@ end)
 4. Applies network settings via `networksetup` commands with sudo:
    - `networksetup -setmanual` / `-setdhcp` for IPv4
    - `networksetup -setv6manual` / `-setv6automatic` / `-setv6off` for IPv6
-   - `networksetup -setdnsservers` for DNS (empty = clear to DHCP)
+   - `networksetup -setdnsservers` for DNS (on DHCP, empty = the lease supplies the resolvers; on a static address, empty = the fallback DNS takes over, see [Fallback DNS](#fallback-dns))
 5. Polls via `waitForCondition()` to verify IP/DNS actually took effect
 6. Sends a macOS notification and shows a popup with the full network report, listing every step that did not complete (the title changes to "partially applied" when the list is not empty)
 
@@ -267,7 +268,7 @@ Edit `~/.hammerspoon/wifi_autoconfig/config.json`, or use the built-in editor (m
 | `ip` | IPv4 address (manual mode) |
 | `netmask` | Subnet mask (default: `255.255.255.0`) |
 | `gateway` | Router IP. Required in manual mode: `-setmanual` takes it as a positional argument, so an omitted value used to be sent as the literal text `nil` |
-| `dns` | DNS servers, comma-separated (a JSON array is accepted and stored back as a comma-separated string). Empty = DHCP auto |
+| `dns` | DNS servers, comma-separated (a JSON array is accepted and stored back as a comma-separated string). Empty = DHCP-supplied DNS on a `dhcp` profile; on a `manual` profile the fallback DNS takes over, see [Fallback DNS](#fallback-dns) |
 | `v6mode` | `"automatic"`, `"manual"`, or `"off"`. Omitted or empty = IPv6 left as it is; only `"off"` disables it. Any other value is refused before a command runs |
 | `ipv6` | IPv6 address (manual mode) |
 | `v6prefix` | IPv6 prefix length (default: `64`) |
@@ -297,6 +298,18 @@ Edit `~/.hammerspoon/wifi_autoconfig/config.json`, or use the built-in editor (m
   }
 }
 ```
+
+### Fallback DNS
+
+A static address has no DHCP lease to supply resolvers, so on a `manual` profile that names no DNS servers the apply falls back, in order, to:
+
+1. The resolvers the interface was already using — read **before** the address is switched, which on a fresh connection is what this network handed out (so intranet names keep resolving)
+2. The global **Fallback DNS** configured in the editor (menu bar icon → Open Settings → ★ Global Fallback Policy)
+3. The built-in public pair `223.5.5.5, 114.114.114.114`
+
+Whichever path is taken, the interface is read back afterwards: an apply that ends with no usable resolver is reported as a problem instead of as a success, and the chosen source is listed in the report as a note. A `dhcp` profile with no DNS is unaffected — there, clearing the list is the correct answer because the lease supplies the resolvers, and that case is verified now too.
+
+The fallback is one global setting, not a per-SSID field: it is edited only under the ★ Global Fallback Policy entry, and every other profile's panel shows the value in effect. It is stored in `~/.hammerspoon/wifi_autoconfig/fallback_dns.json`, deliberately separate from `config.json`.
 
 ## Project Structure
 

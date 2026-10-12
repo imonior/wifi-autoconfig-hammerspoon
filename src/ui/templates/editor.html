@@ -159,6 +159,34 @@
         button.danger { background: var(--btn-danger); }
         button.warning { background: var(--btn-warning); }
         button.secondary { background: #4a4a4a; color: #ccc; }
+
+        /* The fallback row carries a button next to its input, so it cannot use the
+           90px-label grid: the button would be pushed onto a row of its own and read as
+           a second submit action. It sits inline instead, and the button is sized to
+           match the field rather than to the footer buttons.
+           兜底这一行输入框旁带按钮，不能用 90px 标签的栅格布局——按钮会被挤到单独一行，
+           看起来像第二个提交按钮。这里改为行内排布，按钮尺寸也跟输入框对齐而非跟底部按钮一致。 */
+        .form-group.inline { display: flex; align-items: center; gap: 8px; }
+        .form-group.inline label { flex: 0 0 90px; }
+        .form-group.inline .field { flex: 1; display: flex; gap: 6px; align-items: center; }
+        .form-group.inline .field input { flex: 1; min-width: 0; }
+        button.compact {
+            flex: 0 0 auto;
+            padding: 4px 10px;
+            font-size: 11px;
+            line-height: 1.2;
+            border-radius: 4px;
+        }
+        .readonly-value {
+            flex: 1;
+            font-size: 12px;
+            color: var(--text-main);
+            word-break: break-all;
+        }
+        .readonly-hint {
+            font-size: 10px;
+            color: var(--text-label);
+        }
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
     </style>
@@ -220,10 +248,26 @@
             </div>
 
             <div class="section-title" id="section-fallback-dns">四、兜底 DNS（全局）</div>
-            <div class="form-group">
+            <!-- Edited only while the global fallback policy is selected, because the
+                 fallback is global: one policy for every SSID, so letting each SSID carry
+                 its own copy of this field would suggest it was per-network. Everywhere
+                 else the row shows the value that is in effect instead.
+                 仅在选中「全局兜底策略」时可编辑：兜底是全局的、每个 SSID 共用一份，
+                 若每条策略都能改它，会让人误以为它是按网络分别配置的。其余位置只显示
+                 当前生效的值。 -->
+            <div class="form-group inline" id="fallback-edit-row">
                 <label id="label-fallback-dns">Fallback DNS</label>
-                <input type="text" id="fallback-dns" placeholder="未配置时使用内置公共 DNS">
-                <button class="secondary" id="btn-save-fallback" onclick="saveFallbackDns()">保存兜底 DNS</button>
+                <div class="field">
+                    <input type="text" id="fallback-dns" placeholder="未配置时使用内置公共 DNS">
+                    <button class="secondary compact" id="btn-save-fallback" onclick="saveFallbackDns()">保存</button>
+                </div>
+            </div>
+            <div class="form-group inline" id="fallback-view-row" style="display:none;">
+                <label id="label-fallback-dns-view">Fallback DNS</label>
+                <div class="field">
+                    <span class="readonly-value" id="fallback-dns-view"></span>
+                    <span class="readonly-hint" id="fallback-dns-hint"></span>
+                </div>
             </div>
         </div>
 
@@ -267,8 +311,11 @@
             dns_placeholder_dhcp: "留空则由 DHCP 自动获取",
             section_fallback_dns: "四、兜底 DNS（全局）",
             label_fallback_dns: "兜底 DNS",
+            label_fallback_dns_view: "兜底 DNS",
             fallback_dns_placeholder: "未配置时使用内置公共 DNS",
-            btn_save_fallback: "保存兜底 DNS",
+            fallback_dns_edit_hint: "在「★ 全局后备兜底策略」中修改",
+            fallback_dns_view_hint: "全局生效",
+            btn_save_fallback: "保存",
             force_apply: "⚡ 强制覆写当前网卡",
             delete: "删除配置",
             save: "保存",
@@ -310,8 +357,11 @@
             dns_placeholder_dhcp: "Leave empty to obtain DNS automatically via DHCP",
             section_fallback_dns: "4. Fallback DNS (global)",
             label_fallback_dns: "Fallback DNS",
+            label_fallback_dns_view: "Fallback DNS",
             fallback_dns_placeholder: "Built-in public DNS is used when this is empty",
-            btn_save_fallback: "Save fallback DNS",
+            fallback_dns_edit_hint: "Edit it under \u2605 Global Fallback Policy",
+            fallback_dns_view_hint: "applies to all networks",
+            btn_save_fallback: "Save",
             force_apply: "⚡ Force Apply to Current NIC",
             delete: "Delete Config",
             save: "Save",
@@ -363,8 +413,10 @@
 
         document.getElementById('section-fallback-dns').textContent = t('section_fallback_dns');
         document.getElementById('label-fallback-dns').textContent = t('label_fallback_dns');
+        document.getElementById('label-fallback-dns-view').textContent = t('label_fallback_dns_view');
         document.getElementById('fallback-dns').placeholder = t('fallback_dns_placeholder');
         document.getElementById('btn-save-fallback').textContent = t('btn_save_fallback');
+        renderFallbackRows();
         
         document.getElementById('btn-force').textContent = t('force_apply');
         document.getElementById('btn-delete').textContent = t('delete');
@@ -435,6 +487,12 @@
     let currentSelectedSSID = null;
     let currentHardwareInfo = { ip: "", netmask: "", gateway: "", dns: "" };
 
+    // The SSID the global fallback policy is stored under. Named once so the selection
+    // that gates the editable fallback row cannot drift from the one that builds the list.
+    // 全局兜底策略在配置里使用的 SSID。只定义一次，避免"决定是否可编辑兜底"的那处判断
+    // 与"构建列表"的那处判断出现分歧。
+    const GLOBAL_FALLBACK_SSID = "__DEFAULT__";
+
     function refreshConfig(newNetworks, newConfigs) {
         console.log("refreshConfig - 刷新配置");
         preferredNetworks = JSON.parse(newNetworks);
@@ -455,7 +513,7 @@
         listContainer.innerHTML = "";
         
         const currentSSID = window.currentConnectedSSID;
-        const defaultItem = "__DEFAULT__";
+        const defaultItem = GLOBAL_FALLBACK_SSID;
         
         const configuredNetworks = [];
         const unconfiguredNetworks = [];
@@ -574,7 +632,7 @@
         const btnDelete = document.getElementById("btn-delete");
         const isConfigured = savedConfigs[ssid] !== undefined;
         
-        if (ssid === "__DEFAULT__") {
+        if (ssid === GLOBAL_FALLBACK_SSID) {
             targetName.textContent = t('global_fallback');
             targetHint.textContent = t('global_hint');
             btnDelete.style.display = "none";
@@ -603,6 +661,10 @@
             }
         }
         targetInfo.style.display = "flex";
+
+        // Which of the two fallback rows is shown depends on what was just selected.
+        // 兜底那一行显示可编辑还是只读，取决于刚刚选中的是什么。
+        renderFallbackRows();
 
         const config = savedConfigs[ssid] || { mode: "dhcp", v6mode: "automatic", dns: "" };
         
@@ -689,9 +751,34 @@
     // every status sync would discard whatever they are in the middle of typing.
     // 只填充一次：这个输入框保存用户配置的值，每次状态同步都覆盖会丢掉正在输入的内容。
     let fallbackDnsLoaded = false;
+    let currentFallbackDns = "";
+
+    // The fallback is one global setting, so the editor offers it in one place only: under
+    // the global fallback policy. On any other SSID the same row shows the value in effect
+    // and points back at where it can be changed, which keeps a global setting from
+    // looking like a per-network one.
+    // 兜底是全局设置，编辑器只在「全局兜底策略」一处提供编辑入口；在其他 SSID 下同一行只显示
+    // 当前生效的值并指回修改位置，避免全局设置看起来像按网络分别配置。
+    function renderFallbackRows() {
+        const isGlobal = currentSelectedSSID === GLOBAL_FALLBACK_SSID;
+        document.getElementById("fallback-edit-row").style.display = isGlobal ? "flex" : "none";
+        document.getElementById("fallback-view-row").style.display = isGlobal ? "none" : "flex";
+        if (!isGlobal) {
+            document.getElementById("fallback-dns-view").textContent =
+                currentFallbackDns || t('fallback_dns_placeholder');
+        }
+        document.getElementById("fallback-dns-hint").textContent =
+            isGlobal ? t('fallback_dns_view_hint') : t('fallback_dns_edit_hint');
+    }
 
     function saveFallbackDns() {
         callLua('save_fallback_dns', {dns: document.getElementById("fallback-dns").value});
+        // The saved value is what the other rows should show straight away; waiting for the
+        // next status sync would leave them reading the previous value with no sign of why.
+        // 保存后的值立刻就是其他位置该显示的内容；等下一次状态同步会让它们在毫无提示的情况下
+        // 继续显示旧值。
+        currentFallbackDns = document.getElementById("fallback-dns").value.trim();
+        renderFallbackRows();
     }
 
     function updateCurrentNetworkUI(ssid, v4mode, ip, netmask, gateway, dns, v6mode, v6ip, fallbackDns) {
@@ -700,7 +787,9 @@
 
         if (fallbackDnsLoaded === false) {
             document.getElementById("fallback-dns").value = fallbackDns || "";
+            currentFallbackDns = fallbackDns || "";
             fallbackDnsLoaded = true;
+            renderFallbackRows();
         }
         
         // getActiveDNS() answers with a localized "system auto" label when the
@@ -747,7 +836,7 @@ ${t('dns_servers')}: ${dns || t('system_auto')}`;
         }
         
         if (prevSSID === ssid) {
-            if (currentSelectedSSID && currentSelectedSSID !== '__DEFAULT__') {
+            if (currentSelectedSSID && currentSelectedSSID !== GLOBAL_FALLBACK_SSID) {
                 const btnForce = document.getElementById("btn-force");
                 if (ssid && ssid === currentSelectedSSID) {
                     btnForce.style.display = "block";
