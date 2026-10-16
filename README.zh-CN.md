@@ -34,19 +34,23 @@ curl -fsSL https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon
 
 ### 国内镜像加速
 
-如果直连 GitHub 较慢，可使用代理镜像一键安装：
+如果直连 GitHub 较慢，安装器可以替你挑选镜像。未指定代理时，它会自动测速多个内置 GitHub 镜像；在交互式终端里会让你选择，在 `curl | bash` 这类非交互场景下则自动选用最快的一个。下载的发布包会与 `scripts/checksums.txt`（从直连 GitHub 获取）做 SHA-256 校验，确保被污染的镜像无法静默投送篡改后的代码。
+
+如需强制指定某个镜像：
 
 ```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | GITHUB_PROXY=https://ghfast.top/ bash
 ```
 
-更新时同样加上代理前缀：
+`GITHUB_PROXY=...` 会把镜像显式传给安装脚本，使 Hammerspoon 下载和项目压缩包也走镜像；不传的话只有 install.sh 本身经镜像下载，后续下载仍然直连 GitHub。
+
+更新时同样传递镜像：
 
 ```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash -s -- --update
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | GITHUB_PROXY=https://ghfast.top/ bash -s -- --update
 ```
 
-也可以通过环境变量或 `--proxy` 参数指定任意代理：
+也可以通过环境变量或 `--proxy` 参数指定任意代理（二者都会跳过自动镜像测速）：
 
 ```bash
 # 环境变量方式

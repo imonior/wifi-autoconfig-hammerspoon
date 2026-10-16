@@ -34,19 +34,31 @@ curl -fsSL https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon
 
 ### China Mirror
 
-If direct GitHub access is slow in mainland China, use a proxy mirror:
+If direct GitHub access is slow in mainland China, the installer can pick a mirror for you.
+With no proxy set, it speed-tests several built-in GitHub mirrors and — when run in an
+interactive shell — lets you choose one; in a non-interactive shell (`curl | bash`) it
+auto-selects the fastest. Downloaded release archives are SHA-256 verified against
+`scripts/checksums.txt` (fetched from direct GitHub) so a compromised mirror cannot
+silently serve tampered code.
+
+To force a specific mirror explicitly:
 
 ```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | GITHUB_PROXY=https://ghfast.top/ bash
 ```
 
-To update via the mirror, add the proxy prefix as well:
+The `GITHUB_PROXY=...` prefix passes the mirror to the installer, so the Hammerspoon
+download and the project tarball also go through it. Without it, only the install script
+itself is fetched via the mirror and all later downloads hit GitHub directly.
+
+To update via the mirror, pass the mirror the same way:
 
 ```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash -s -- --update
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | GITHUB_PROXY=https://ghfast.top/ bash -s -- --update
 ```
 
-You can also specify any proxy via an environment variable or the `--proxy` flag:
+You can also specify any proxy via an environment variable or the `--proxy` flag (either
+skips the automatic mirror speed test):
 
 ```bash
 # Environment variable

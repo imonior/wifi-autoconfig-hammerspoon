@@ -4,11 +4,17 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash
-#   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash  # China mirror
 #   bash install.sh              # Fresh install
 #   bash install.sh --update     # Update code only (preserves config.json)
-#   bash install.sh --proxy URL  # Use GitHub proxy
+#   bash install.sh --proxy URL  # Use a specific GitHub proxy (skips auto mirror test)
 #   bash install.sh --help       # Show help
+#
+# Mirror handling for users in mainland China:
+#   When no proxy is given, the installer speed-tests several built-in GitHub
+#   mirrors and (if run in an interactive shell) lets you pick one; otherwise it
+#   auto-selects the fastest. To force a mirror, set GITHUB_PROXY:
+#     GITHUB_PROXY=https://ghfast.top/ bash install.sh
+#   Downloaded release archives are SHA-256 verified against scripts/checksums.txt.
 #
 set -e
 
@@ -18,7 +24,7 @@ set -e
 GITHUB_USER="imonior"
 GITHUB_REPO="wifi-autoconfig-hammerspoon"
 GITHUB_BRANCH="main"
-MODULE_VERSION="3.2.8"
+MODULE_VERSION="3.2.9"
 
 # GitHub proxy support (for users in China)
 # Usage: GITHUB_PROXY=https://ghfast.top/ bash install.sh
@@ -78,6 +84,203 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ============================================================================
+# GitHub mirror discovery (China-friendly, opt-in via auto speed test)
+# ============================================================================
+# Built-in candidate mirrors. Used ONLY when the user does not pass an explicit
+# GITHUB_PROXY (env) or --proxy flag. Prefix-style: <mirror>/<target-url>.
+# Each is reachability- and speed-tested at run time, so a dead or slow one is
+# simply skipped. (mirror.ghproxy.com was dropped: its TLS chain fails certificate
+# verification on stock clients, so it could never be selected anyway.)
+# 内置候选镜像。仅当用户未显式传 GITHUB_PROXY（环境变量）或 --proxy 时使用。形式为
+# <镜像>/<目标URL> 前缀。运行时会逐个测可达性与速度，失效或慢的会被自动跳过。
+# （mirror.ghproxy.com 已移除：其 TLS 证书链在原生客户端上校验失败，本就无法被选中。）
+MIRROR_CANDIDATES=(
+    "https://gh-proxy.com"
+    "https://ghfast.top"
+    "https://ghproxy.net"
+)
+# A tiny, always-present file used to measure each mirror's latency.
+MIRROR_PROBE_PATH="scripts/install.sh"
+
+# Probe every candidate mirror; print "<latency> <mirror>" lines, best first.
+probe_mirrors() {
+    local m t
+    local out=()
+    for m in "${MIRROR_CANDIDATES[@]}"; do
+        t=$(curl -fsS -m 5 -r 0-0 -o /dev/null -w '%{time_total}' \
+            "${m}/https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/${MIRROR_PROBE_PATH}" 2>/dev/null) || continue
+        case "$t" in ''|*[!0-9.]*) continue ;; esac
+        out+=("${t} ${m}")
+    done
+    if [ ${#out[@]} -gt 0 ]; then
+        printf '%s\n' "${out[@]}" | sort -n
+    fi
+    return 0
+}
+
+# Return direct GitHub latency (empty string if unreachable).
+probe_direct() {
+    curl -fsS -m 5 -r 0-0 -o /dev/null -w '%{time_total}' \
+        "https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/${MIRROR_PROBE_PATH}" 2>/dev/null || true
+}
+
+# Pick a download source: interactive when a TTY is available, else the fastest.
+# Does nothing if GITHUB_PROXY was already set explicitly by the caller.
+select_mirror() {
+    local results direct_lat choice i line label direct_idx
+    results="$(probe_mirrors)"
+    direct_lat="$(probe_direct)"
+
+    if [ -z "$results" ] && [ -z "$direct_lat" ]; then
+        warn "No GitHub mirror or direct connection reachable; will try direct anyway."
+        GITHUB_PROXY=""
+        return 0
+    fi
+
+    echo ""
+    info "GitHub download source speed test (lower is better):"
+    i=1
+    if [ -n "$results" ]; then
+        while IFS= read -r line; do
+            label="${line#* }"
+            echo "  [$i] ${label}/   (${line%% *}s)"
+            i=$((i + 1))
+        done <<< "$results"
+    fi
+    if [ -n "$direct_lat" ]; then
+        echo "  [$i] Direct GitHub   (${direct_lat}s)"
+        direct_idx=$i
+        i=$((i + 1))
+    fi
+    echo "  [0] Direct GitHub (no mirror)"
+    echo ""
+
+    if [ -t 1 ] && [ -t 0 ]; then
+        printf 'Select a download source [1-%d, 0=direct, default=fastest]: ' "$((i - 1))"
+        read -r choice || choice=""
+    else
+        choice=""
+        info "Non-interactive shell detected; auto-selecting the fastest source."
+    fi
+
+    if [ -z "$choice" ]; then
+        if [ -n "$results" ]; then
+            line=$(printf '%s\n' "$results" | head -1); label="${line#* }"
+        else
+            label="direct"
+        fi
+    elif [ "$choice" = "0" ]; then
+        label="direct"
+    elif [ -n "$direct_lat" ] && [ "$choice" = "$direct_idx" ]; then
+        label="direct"
+    else
+        line=$(printf '%s\n' "$results" | sed -n "${choice}p" 2>/dev/null) || true
+        if [ -n "$line" ]; then label="${line#* }"; else label="direct"; fi
+    fi
+
+    if [ "$label" = "direct" ]; then
+        GITHUB_PROXY=""
+        info "Using direct GitHub."
+    else
+        GITHUB_PROXY="${label}/"
+        info "Using mirror: ${GITHUB_PROXY}"
+    fi
+}
+
+# ============================================================================
+# Archive integrity
+# 归档完整性
+# ============================================================================
+# Print the SHA-256 of a file with whichever tool the host provides. macOS ships
+# shasum and openssl but NOT the GNU sha256sum, so hard-coding one tool would abort
+# the install on a stock Mac.
+# 用宿主机可用的任一工具打印文件 SHA-256。macOS 自带 shasum/openssl，但没有 GNU 的
+# sha256sum；若写死单一工具，会在原生 Mac 上直接中止安装。
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF}'
+    fi
+}
+
+# Verify a downloaded release tarball.
+# For a tagged release we compare its SHA-256 against the value published in
+# scripts/checksums.txt, fetched from DIRECT GitHub so a compromised mirror cannot
+# also fake the checksum. When direct GitHub is unreachable (common behind the GFW)
+# we fall back to reading the archive's own MODULE_VERSION, and warn that the file
+# was NOT hash-verified. A branch install has neither a checksum nor a fixed version
+# to compare against, so it is only checked for carrying a version at all.
+# 校验下载到的发布压缩包：tag 发布时把 SHA-256 与 scripts/checksums.txt 公布的值比对，
+# 且该校验和从「直连 GitHub」获取，防止被污染的镜像连校验和一起伪造。直连不可达时回退为
+# 读取压缩包内的 MODULE_VERSION，并明确告警「未做哈希校验」。分支安装既无校验和也无固定
+# 版本号可比，只校验其确实带有版本号。
+verify_tarball() {
+    local tarball="$1" ref="$2" actual expected sumfile member ver
+    actual=$(sha256_of "$tarball")
+    if [ -z "$actual" ]; then
+        error "Could not compute a checksum of the downloaded archive."
+        return 1
+    fi
+
+    # Tag release: authoritative SHA-256 check against the published checksum.
+    # tag 发布：与公布校验和做权威比对。
+    if [[ "$ref" == v* ]]; then
+        local sum_url="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${ref}/scripts/checksums.txt"
+        sumfile=$(curl -fsSL -m 8 "$sum_url" 2>/dev/null) || sumfile=""
+        expected=""
+        if [ -n "$sumfile" ]; then
+            expected=$(printf '%s\n' "$sumfile" | awk -v r="$ref" '$1 == r { print $2; exit }')
+        fi
+        if [ -n "$expected" ]; then
+            if [ "$actual" = "$expected" ]; then
+                info "Integrity verified: SHA-256 matches the published checksum for ${ref}."
+                return 0
+            fi
+            error "Integrity check FAILED for ${ref}: checksum mismatch."
+            error "  expected: $expected"
+            error "  actual  : $actual"
+            return 1
+        fi
+        warn "Published checksum for ${ref} could not be fetched (direct GitHub unreachable)."
+        warn "Falling back to an embedded-version check only - the archive was NOT hash-verified."
+    fi
+
+    # Embedded-version sanity check. Locate install.sh by listing the archive: a
+    # tag archive names its root dir after the tag (dropping the leading "v") while
+    # a branch archive keeps the branch name, so neither path can be guessed.
+    # MODULE_VERSION is the single source of truth.
+    # 内嵌版本号健全性检查。通过列出归档内容定位 install.sh：tag 归档的根目录名会去掉开头
+    # 的 "v"，而分支归档保留分支名，二者都无法可靠猜测。MODULE_VERSION 是唯一版本来源。
+    member=$(tar tzf "$tarball" 2>/dev/null | grep -m1 -E '(^|/)scripts/install\.sh$')
+    ver=""
+    if [ -n "$member" ]; then
+        ver=$(tar xzf "$tarball" -O "$member" 2>/dev/null \
+                | grep -m1 -E '^MODULE_VERSION=' | sed 's/.*="//; s/"$//')
+    fi
+    if [ -z "$ver" ]; then
+        error "Could not read MODULE_VERSION from the downloaded archive."
+        return 1
+    fi
+
+    if [[ "$ref" == v* ]]; then
+        if [ "$ver" = "${ref#v}" ]; then
+            info "Embedded version matches target (${ver})."
+            return 0
+        fi
+        error "Version mismatch: downloaded archive reports v${ver}, expected ${ref#v}."
+        return 1
+    fi
+
+    # Branch install: no fixed version to compare against.
+    # 分支安装：没有可比的固定版本号。
+    info "Branch archive reports version v${ver} (no checksum is published for branches)."
+    return 0
+}
+
 show_help() {
     cat <<'EOF'
 Wi-Fi AutoConfig for Hammerspoon installer
@@ -86,21 +289,26 @@ Usage:
   bash install.sh              Fresh install (installs Hammerspoon if missing)
   bash install.sh --update     Update code only, preserves your config.json
   bash install.sh --force      Overwrite existing installation without prompting
-  bash install.sh --proxy URL  Use GitHub proxy (for faster access in China)
+  bash install.sh --proxy URL  Use a specific GitHub proxy (skips the auto mirror test)
   bash install.sh --branch BR  Install from a branch instead of the release tag
   bash install.sh --help       Show this help message
 
 One-liner (curl | bash):
   curl -fsSL https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash
 
-  With proxy (for China):
-  curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash
+  Mirror auto-selection (mainland China):
+  With no proxy set, the installer speed-tests several built-in GitHub mirrors and,
+  in an interactive shell, lets you pick one; otherwise it auto-selects the fastest.
+  Downloaded release archives are SHA-256 verified against scripts/checksums.txt.
+
+  Force a specific mirror:
+  curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | GITHUB_PROXY=https://ghfast.top/ bash
 
   With update:
   curl -fsSL https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash -s -- --update
 
-  With proxy + update:
-  curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | bash -s -- --update
+  With mirror + update:
+  curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/imonior/wifi-autoconfig-hammerspoon/main/scripts/install.sh | GITHUB_PROXY=https://ghfast.top/ bash -s -- --update
 
 Environment variable:
   GITHUB_PROXY=https://ghfast.top/ bash install.sh
@@ -740,6 +948,11 @@ download_project() {
         exit 1
     fi
 
+    if ! verify_tarball "$tarball" "$ref"; then
+        error "Aborting: the downloaded archive failed integrity verification."
+        exit 1
+    fi
+
     if ! tar xzf "$tarball" -C "$TMP_DIR"; then
         error "Failed to extract the downloaded archive."
         exit 1
@@ -976,6 +1189,14 @@ main() {
     echo ""
 
     check_os
+
+    # Choose a download source only when the user has not supplied one explicitly
+    # (GITHUB_PROXY env var or --proxy flag). This keeps the script's behaviour
+    # predictable when a mirror is forced, and enables the auto speed test otherwise.
+    if [ -z "$GITHUB_PROXY" ]; then
+        select_mirror
+    fi
+
     ensure_hammerspoon
     ensure_hammerspoon_dir
 

@@ -81,6 +81,28 @@ DIST_DIR="$PROJECT_ROOT/dist"
 STAGE="$DIST_DIR/staging/$PKG_DIR"
 ZIP="$DIST_DIR/${PKG_NAME}-v${VERSION}.zip"
 
+# Repository coordinates, kept in step with scripts/install.sh: that script verifies
+# a downloaded archive against the checksum this build publishes. Without these the
+# tarball URL below would be "github.com//archive/..." and no checksum would ever be
+# written, silently disabling install-time hash verification.
+# 仓库坐标，与 scripts/install.sh 保持一致：安装脚本会用本构建发布的校验和校验下载的归档。
+# 缺少它们时下面的 tarball URL 会变成 "github.com//archive/..."，导致永远写不出校验和，
+# 从而在无声中关闭安装时的哈希校验。
+GITHUB_USER="imonior"
+GITHUB_REPO="wifi-autoconfig-hammerspoon"
+
+# macOS lacks the GNU sha256sum; pick whichever tool exists.
+# macOS 没有 GNU 的 sha256sum；选用任一可用工具。
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF}'
+    fi
+}
+
 echo "Building release package v${VERSION}..."
 
 # ---- Stage files -----------------------------------------------------------
@@ -99,6 +121,40 @@ chmod +x "$STAGE/scripts/"*.sh
 if [ ! -f "$STAGE/src/init.lua" ] || [ ! -f "$STAGE/scripts/install.sh" ]; then
     echo "ERROR: staged bundle is missing required files" >&2
     exit 1
+fi
+
+# ---- Compute the release tarball SHA-256 (for install-time integrity) --------
+# install.sh verifies the downloaded archive against this value, fetched from
+# DIRECT GitHub so a compromised mirror cannot also fake the checksum.
+echo "Computing SHA-256 of the release tarball (v${VERSION})..."
+TARBALL_URL="https://github.com/${GITHUB_USER}/${GITHUB_REPO}/archive/v${VERSION}.tar.gz"
+TMP_TAR="$(mktemp)"
+if curl -fsSL -m 60 -o "$TMP_TAR" "$TARBALL_URL" 2>/dev/null; then
+    SUM="$(sha256_of "$TMP_TAR")"
+    rm -f "$TMP_TAR"
+    if [ -z "$SUM" ]; then
+        echo "WARNING: downloaded the tarball but could not compute a SHA-256" >&2
+        echo "         (no sha256sum / shasum / openssl). scripts/checksums.txt was" >&2
+        echo "         NOT updated; install.sh will fall back to an embedded-version" >&2
+        echo "         check until a checksum is published." >&2
+    else
+        CHECKSUM_FILE="$PROJECT_ROOT/scripts/checksums.txt"
+        if [ -f "$CHECKSUM_FILE" ] && grep -q "^v${VERSION} " "$CHECKSUM_FILE"; then
+            awk -v v="v${VERSION}" -v s="$SUM" '
+                $1 == v { $2 = s; found = 1 }
+                { print }
+                END { if (!found) print v, s }
+            ' "$CHECKSUM_FILE" > "$CHECKSUM_FILE.tmp" && mv "$CHECKSUM_FILE.tmp" "$CHECKSUM_FILE"
+        else
+            echo "v${VERSION} ${SUM}" >> "$CHECKSUM_FILE"
+        fi
+        echo "  -> $CHECKSUM_FILE (v${VERSION} ${SUM})"
+    fi
+else
+    rm -f "$TMP_TAR"
+    echo "WARNING: could not fetch the release tarball to compute a checksum." >&2
+    echo "         scripts/checksums.txt was NOT updated; install.sh will fall back" >&2
+    echo "         to an embedded-version check until a checksum is published." >&2
 fi
 
 # ---- Zip -------------------------------------------------------------------
@@ -322,9 +378,10 @@ echo "  Notes   : $RELEASE_MD"
 # build. When the committed copies are not the ones just generated, the repository
 # keeps describing the PREVIOUS release while the tag points here - so say it out loud
 # rather than leaving a silently stale file, and leave the committing to the maintainer.
-if ! git diff --quiet -- release.html RELEASE.md 2>/dev/null; then
+if ! git diff --quiet -- release.html RELEASE.md scripts/checksums.txt 2>/dev/null; then
     echo ""
-    echo "NOTE: the generated release.html / RELEASE.md differ from the committed copies."
+    echo "NOTE: the generated release.html / RELEASE.md / scripts/checksums.txt differ"
+    echo "      from the committed copies."
     echo "      Commit them, or the repository keeps describing the previous release:"
-    echo "        git add release.html RELEASE.md"
+    echo "        git add release.html RELEASE.md scripts/checksums.txt"
 fi

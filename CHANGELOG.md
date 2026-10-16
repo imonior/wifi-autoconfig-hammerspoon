@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.9] - 2026-10-16
+
+### Added
+
+- **The installer picks the fastest GitHub mirror and verifies every download** — with no proxy set, it speed-tests a small pool of GitHub mirrors plus a direct connection; an interactive terminal gets a menu to choose from, a non-interactive `curl | bash` auto-selects the fastest. Each downloaded release archive is then checked against the SHA-256 in `scripts/checksums.txt` (fetched from direct GitHub, so a mirror cannot also forge the checksum); if direct GitHub is unreachable it falls back to the archive's own `MODULE_VERSION` and warns that the file was not hash-verified. `build-release.sh` now publishes `scripts/checksums.txt` for each tagged release. The candidate pool gained gh-proxy.com and dropped mirror.ghproxy.com, whose TLS chain fails certificate verification on stock clients.
+
+### Changed
+
+- **The one-liner mirror command now passes the mirror to the installer** — appending `| GITHUB_PROXY=https://ghfast.top/ bash` hands the mirror to the script so the Hammerspoon download and the project tarball go through it too; previously only the first request (the install script itself) used the mirror and every later download hit GitHub directly. The installer's built-in help and the README (English and 简体中文) describe the new behaviour.
+
+## [3.2.8] - 2026-10-12
+
 ### Changed
 
 - **The fallback DNS is edited in one place and shown everywhere else** — the field used to sit in every profile's panel with a full-width save button pushed onto its own row, which made a global setting read as a per-network one and gave it a second submit-sized button. The save button now sits beside the input at field size, and the row is editable only while the ★ Global Fallback Policy is selected; every other profile shows the value in effect with a pointer to where it is changed. The fallback a save produces is reflected in those rows immediately rather than at the next status sync, and the `__DEFAULT__` ssid literal is named once instead of being repeated in four places.
